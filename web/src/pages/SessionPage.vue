@@ -1,15 +1,26 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Play, Square, Loader2, Trash2, ChevronLeft, BarChart3, MessageSquare, Files } from '@lucide/vue'
+import {
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogOverlay,
+  DialogPortal,
+  DialogRoot,
+  DialogTitle,
+} from 'reka-ui'
 
 import { SidebarProvider, SidebarInset, SidebarTrigger } from '@/components/ui/sidebar'
 import AppSidebar from '@/components/AppSidebar.vue'
 import { Separator } from '@/components/ui/separator'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { apiFetch, getApiBaseUrl } from '@/lib/api'
 
-import type { LLMConfig, Tool, EventRecord, AgentSession, MCPServer, AgentMessage, GraphNodeRecord, GraphNodeStatus } from '@/types/agent'
+import type { LLMConfig, Tool, EventRecord, AgentSession, AgentSessionTemplate, MCPServer, AgentMessage, GraphNodeRecord, GraphNodeStatus } from '@/types/agent'
 import MessageItem from '@/components/agent/MessageItem.vue'
 import AgentSettings from '@/components/agent/AgentSettings.vue'
 import ActiveResponse from '@/components/agent/ActiveResponse.vue'
@@ -36,6 +47,7 @@ const mcpEvents = ref<EventRecord[]>([])
 const graphNodes = ref<GraphNodeRecord[]>([])
 const ragSources = ref<string[]>([])
 const sessions = ref<AgentSession[]>([])
+const sessionTemplates = ref<AgentSessionTemplate[]>([])
 const selectedSessionId = ref<number | null>(null)
 const messages = ref<AgentMessage[]>([])
 const systemPrompt = ref('')
@@ -45,6 +57,9 @@ const enable1mContext = ref(false)
 const enableRag = ref(false)
 const responseScroll = ref<HTMLDivElement | null>(null)
 const expandedMessages = ref<Record<number, boolean>>({})
+const isTemplateDialogOpen = ref(false)
+const templateName = ref('')
+const templateError = ref('')
 const selectedSessionStorageKey = 'HIRO_SELECTED_AGENT_SESSION_ID'
 let socketSessionId: number | null = null
 let socketConnectPromise: Promise<void> | null = null
@@ -123,18 +138,21 @@ const canRun = computed(() => {
   return Boolean(selectedSessionId.value) && Boolean(prompt.value.trim()) && Boolean(selectedConfigId.value) && !isRunning.value
 })
 
-const isAssistantPlaceholder = (message: AgentMessage) => {
+const hasTraceMetadata = (message: AgentMessage) => {
   const metadata = message.extra_metadata
-  const hasTraceMetadata = Boolean(
+  return Boolean(
     metadata?.graph_nodes?.length
     || metadata?.tool_events?.length
     || metadata?.mcp_events?.length
   )
+}
+
+const isAssistantPlaceholder = (message: AgentMessage) => {
   return (
     message.role === 'assistant'
     && !message.content.trim()
     && (!message.tool_calls || message.tool_calls.length === 0)
-    && !hasTraceMetadata
+    && !hasTraceMetadata(message)
   )
 }
 
@@ -153,10 +171,67 @@ const isActiveAssistantDraft = (message: AgentMessage) => {
   return graph.some((node) => node.status === 'pending' || node.status === 'running')
 }
 
+const isInternalToolCallAssistant = (message: AgentMessage) => (
+  message.role === 'assistant' && Boolean(message.tool_calls?.length)
+)
+
+const traceCarrierScore = (message: AgentMessage) => {
+  if (message.role !== 'assistant' || !hasTraceMetadata(message)) return -1
+  const hasContent = Boolean(message.content.trim())
+  const hasToolCalls = Boolean(message.tool_calls?.length)
+  if (hasContent && !hasToolCalls && !message.content.startsWith('Error:')) return 3
+  if (hasContent && !hasToolCalls) return 2
+  if (hasContent) return 1
+  return 0
+}
+
+const selectTraceCarrierId = (group: AgentMessage[]) => {
+  let selected: AgentMessage | null = null
+  let selectedScore = -1
+
+  for (const message of group) {
+    const score = traceCarrierScore(message)
+    if (score >= selectedScore) {
+      selected = score >= 0 ? message : selected
+      selectedScore = Math.max(score, selectedScore)
+    }
+  }
+
+  return selected?.id ?? null
+}
+
+const flushDisplayGroup = (group: AgentMessage[], target: AgentMessage[]) => {
+  const traceCarrierId = selectTraceCarrierId(group)
+  const traceCarrier = group.find((message) => message.id === traceCarrierId)
+  const hasFinalTrace = Boolean(
+    traceCarrier
+    && traceCarrier.role === 'assistant'
+    && traceCarrier.content.trim()
+    && (!traceCarrier.tool_calls || traceCarrier.tool_calls.length === 0)
+  )
+
+  for (const message of group) {
+    if (isAssistantPlaceholder(message) || isActiveAssistantDraft(message)) continue
+    if (hasFinalTrace && message.role === 'tool') continue
+    if (hasFinalTrace && isInternalToolCallAssistant(message)) continue
+    if (hasFinalTrace && hasTraceMetadata(message) && message.id !== traceCarrierId) continue
+    target.push(message)
+  }
+}
+
 const displayMessages = computed(() => {
-  const items = messages.value.filter((message) => (
-    !isAssistantPlaceholder(message) && !isActiveAssistantDraft(message)
-  ))
+  const items: AgentMessage[] = []
+  let group: AgentMessage[] = []
+
+  for (const message of messages.value) {
+    if (message.role === 'user' && group.length > 0) {
+      flushDisplayGroup(group, items)
+      group = []
+    }
+    group.push(message)
+  }
+  flushDisplayGroup(group, items)
+
   const draft = prompt.value.trim()
   if (!draft) return items
 
@@ -188,6 +263,12 @@ const fetchSessions = async () => {
   const response = await apiFetch('/api/v1/agent/sessions')
   if (!response.ok) return
   sessions.value = await response.json()
+}
+
+const fetchSessionTemplates = async () => {
+  const response = await apiFetch('/api/v1/agent/templates')
+  if (!response.ok) return
+  sessionTemplates.value = await response.json()
 }
 
 const fetchMessages = async (sessionId: number) => {
@@ -482,6 +563,92 @@ const debouncedSave = () => {
   saveTimeout = setTimeout(saveSessionConfig, 1000)
 }
 
+const currentSettingsPayload = (name?: string) => ({
+  ...(name !== undefined ? { name } : {}),
+  config_id: selectedConfigId.value,
+  system_prompt: systemPrompt.value,
+  temperature: temperature.value,
+  max_tokens: maxTokens.value,
+  enable_1m_context: enable1mContext.value,
+  is_deep_agent: isDeepAgent.value,
+  enable_rag: enableRag.value,
+  tools: [...selectedTools.value],
+  mcp_servers: [...selectedMcpServers.value],
+})
+
+const saveCurrentSettingsAsTemplate = async (templateName: string) => {
+  if (isRunning.value) return false
+
+  const name = templateName.trim()
+  if (!name) return false
+
+  const response = await apiFetch('/api/v1/agent/templates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(currentSettingsPayload(name)),
+  })
+  if (!response.ok) return false
+  await fetchSessionTemplates()
+  return true
+}
+
+const openSaveTemplateDialog = () => {
+  if (isRunning.value || !selectedSessionId.value) return
+
+  const currentSession = sessions.value.find((session) => session.id === selectedSessionId.value)
+  templateName.value = currentSession?.title || ''
+  templateError.value = ''
+  isTemplateDialogOpen.value = true
+}
+
+const submitTemplateDialog = async () => {
+  const name = templateName.value.trim()
+  if (!name) {
+    templateError.value = 'Template name is required.'
+    return
+  }
+
+  const saved = await saveCurrentSettingsAsTemplate(name)
+  if (!saved) {
+    templateError.value = 'Failed to save template.'
+    return
+  }
+
+  isTemplateDialogOpen.value = false
+  templateName.value = ''
+  templateError.value = ''
+}
+
+const applySessionTemplate = async (templateId: number) => {
+  const template = sessionTemplates.value.find((item) => item.id === templateId)
+  if (!template || isRunning.value) return
+
+  selectedConfigId.value = template.config_id || (configs.value.length > 0 ? configs.value[0].id : null)
+  systemPrompt.value = template.system_prompt || ''
+  temperature.value = template.temperature ?? 0.3
+  maxTokens.value = template.max_tokens ?? 100000
+  enable1mContext.value = !!template.enable_1m_context
+  isDeepAgent.value = template.is_deep_agent ?? true
+  enableRag.value = !!template.enable_rag
+  selectedTools.value = template.tools || []
+  selectedMcpServers.value = template.mcp_servers || []
+  await nextTick()
+  await saveSessionConfig()
+}
+
+const deleteSessionTemplate = async (templateId: number) => {
+  if (isRunning.value) return
+  const template = sessionTemplates.value.find((item) => item.id === templateId)
+  if (!template) return
+  if (!confirm(`Delete template "${template.name}"?`)) return
+
+  const response = await apiFetch(`/api/v1/agent/templates/${templateId}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) return
+  sessionTemplates.value = sessionTemplates.value.filter((item) => item.id !== templateId)
+}
+
 const startRun = async () => {
   if (!canRun.value || !selectedSessionId.value) return
   const sessionId = selectedSessionId.value
@@ -563,10 +730,13 @@ const upsertEvent = (target: EventRecord[], incoming: EventRecord) => {
 const upsertGraphNode = (incoming: Partial<GraphNodeRecord> & { id: string, status?: GraphNodeStatus }) => {
   const index = graphNodes.value.findIndex((item) => item.id === incoming.id)
   if (index >= 0) {
+    const existing = graphNodes.value[index]
     graphNodes.value[index] = {
-      ...graphNodes.value[index],
-      ...incoming,
-      status: incoming.status || graphNodes.value[index].status,
+      ...existing,
+      status: incoming.status || existing.status,
+      label: incoming.label || existing.label,
+      description: incoming.description ?? existing.description,
+      optional: incoming.optional ?? existing.optional,
     }
   } else {
     graphNodes.value.push({
@@ -767,6 +937,7 @@ onMounted(async () => {
   await fetchTools()
   await fetchMcpServers()
   await fetchSessions()
+  await fetchSessionTemplates()
 
   const savedSessionId = Number(localStorage.getItem(selectedSessionStorageKey))
   if (savedSessionId && sessions.value.some((session) => session.id === savedSessionId)) {
@@ -1053,13 +1224,11 @@ watch(
               <CardHeader>
                 <div>
                   <CardTitle>Settings</CardTitle>
-                  <CardDescription>Session, model, and parameters.</CardDescription>
+                  <CardDescription>Templates, model, and parameters.</CardDescription>
                 </div>
               </CardHeader>
               <AgentSettings
-
-                :selectedSessionId="selectedSessionId"
-                @update:selectedSessionId="onSessionChange"
+                :canSaveTemplate="Boolean(selectedSessionId)"
                 v-model:selectedConfigId="selectedConfigId"
                 v-model:systemPrompt="systemPrompt"
                 v-model:temperature="temperature"
@@ -1067,7 +1236,6 @@ watch(
                 v-model:enable1mContext="enable1mContext"
                 v-model:isDeepAgent="isDeepAgent"
                 v-model:enableRag="enableRag"
-                :sessions="sessions"
                 :configs="configs"
                 :availableTools="availableTools"
                 :selectedTools="selectedTools"
@@ -1076,8 +1244,10 @@ watch(
                 :isLoading="isLoading"
                 :isToolsLoading="isToolsLoading"
                 :isRunning="isRunning"
-                @create-session="createSession"
-                @delete-session="deleteSession"
+                :templates="sessionTemplates"
+                @save-template="openSaveTemplateDialog"
+                @apply-template="applySessionTemplate"
+                @delete-template="deleteSessionTemplate"
                 @toggle-tool="toggleTool"
                 @toggle-mcp="toggleMcpServer"
               />
@@ -1086,6 +1256,40 @@ watch(
       </main>
 
     </SidebarInset>
+
+    <DialogRoot v-model:open="isTemplateDialogOpen">
+      <DialogPortal>
+        <DialogOverlay class="fixed inset-0 z-50 bg-black/50 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+        <DialogContent class="fixed left-1/2 top-1/2 z-50 w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-background p-5 shadow-lg outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95">
+          <form class="space-y-4" @submit.prevent="submitTemplateDialog">
+            <div class="space-y-1.5">
+              <DialogTitle class="text-base font-semibold">Save Template</DialogTitle>
+              <DialogDescription class="text-sm text-muted-foreground">
+                Save the current session configuration as a reusable template.
+              </DialogDescription>
+            </div>
+
+            <div class="space-y-2">
+              <Label for="session-template-name">Template name</Label>
+              <Input
+                id="session-template-name"
+                v-model="templateName"
+                autocomplete="off"
+                placeholder="Template name"
+              />
+              <p v-if="templateError" class="text-xs text-destructive">{{ templateError }}</p>
+            </div>
+
+            <div class="flex justify-end gap-2">
+              <DialogClose as-child>
+                <Button type="button" variant="outline">Cancel</Button>
+              </DialogClose>
+              <Button type="submit" :disabled="!templateName.trim()">Save</Button>
+            </div>
+          </form>
+        </DialogContent>
+      </DialogPortal>
+    </DialogRoot>
   </SidebarProvider>
 </template>
 

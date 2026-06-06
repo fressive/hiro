@@ -32,11 +32,17 @@ from server.agent.custom_agent import (
     _stream_text_segments,
     _subtract_token_usage,
     attach_trace_metadata_fallback,
+    normalize_trace_metadata,
 )
 from server.agent.session_events import SessionEventHub
 from server.agent.tools import agent_tools
 from server.db import AsyncSessionLocal, get_session
-from server.models.models import LLMConfig, AgentSession, AgentMessage
+from server.models.models import (
+    LLMConfig,
+    AgentSession,
+    AgentSessionTemplate,
+    AgentMessage,
+)
 from server.core.logger import logger
 from server.core.util import get_data_path
 from server.models.schemas import (
@@ -44,6 +50,9 @@ from server.models.schemas import (
     AgentSessionCreate,
     AgentSessionUpdate,
     AgentSessionResponse,
+    AgentSessionTemplateCreate,
+    AgentSessionTemplateUpdate,
+    AgentSessionTemplateResponse,
     AgentMessageResponse,
     ToolResponse,
     SessionFileResponse,
@@ -381,6 +390,76 @@ async def run_agent(
     }
 
 
+@router.get("/templates", response_model=list[AgentSessionTemplateResponse])
+async def list_session_templates(session: AsyncSession = Depends(get_session)):
+    result = await session.execute(
+        select(AgentSessionTemplate).order_by(desc(AgentSessionTemplate.updated_at))
+    )
+    return result.scalars().all()
+
+
+@router.post("/templates", response_model=AgentSessionTemplateResponse)
+async def create_session_template(
+    payload: AgentSessionTemplateCreate,
+    session: AsyncSession = Depends(get_session),
+):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Template name is required")
+
+    template = AgentSessionTemplate(
+        **payload.model_dump(exclude={"name"}),
+        name=name,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    session.add(template)
+    await session.commit()
+    await session.refresh(template)
+    return template
+
+
+@router.patch("/templates/{template_id}", response_model=AgentSessionTemplateResponse)
+async def update_session_template(
+    template_id: int,
+    payload: AgentSessionTemplateUpdate,
+    session: AsyncSession = Depends(get_session),
+):
+    template = await session.get(AgentSessionTemplate, template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    update_data = payload.model_dump(exclude_unset=True)
+    if "name" in update_data:
+        update_data["name"] = (update_data["name"] or "").strip()
+        if not update_data["name"]:
+            raise HTTPException(status_code=400, detail="Template name is required")
+
+    for key, value in update_data.items():
+        setattr(template, key, value)
+        if key in {"tools", "mcp_servers"}:
+            flag_modified(template, key)
+
+    template.updated_at = datetime.now(timezone.utc)
+    await session.commit()
+    await session.refresh(template)
+    return template
+
+
+@router.delete("/templates/{template_id}")
+async def delete_session_template(
+    template_id: int,
+    session: AsyncSession = Depends(get_session),
+):
+    template = await session.get(AgentSessionTemplate, template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    await session.delete(template)
+    await session.commit()
+    return {"message": "Template deleted successfully"}
+
+
 @router.get("/sessions", response_model=list[AgentSessionResponse])
 async def list_sessions(session: AsyncSession = Depends(get_session)):
     result = await session.execute(
@@ -445,6 +524,7 @@ async def list_messages(session_id: int, session: AsyncSession = Depends(get_ses
     )
     messages = list(result.scalars().all())
     attach_trace_metadata_fallback(messages)
+    normalize_trace_metadata(messages)
     return messages
 
 

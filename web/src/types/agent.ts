@@ -51,6 +51,22 @@ export type AgentSession = {
   updated_at: string
 }
 
+export type AgentSessionTemplate = {
+  id: number
+  name: string
+  config_id?: number | null
+  system_prompt?: string | null
+  temperature?: number | null
+  max_tokens?: number | null
+  enable_1m_context?: boolean | null
+  is_deep_agent?: boolean | null
+  enable_rag?: boolean | null
+  tools?: string[] | null
+  mcp_servers?: string[] | null
+  created_at: string
+  updated_at: string
+}
+
 export type MCPServer = {
   id: number
   name: string

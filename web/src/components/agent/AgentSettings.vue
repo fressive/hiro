@@ -1,17 +1,17 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { 
-  Plus, Trash2, Loader2, ChevronUp, ChevronDown
+  Check, Save, Trash2, Loader2, ChevronUp, ChevronDown
 } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
 import { CardContent } from '@/components/ui/card'
-import type { LLMConfig, AgentSession, Tool, MCPServer } from '@/types/agent'
+import type { LLMConfig, AgentSessionTemplate, Tool, MCPServer } from '@/types/agent'
 
 const props = defineProps<{
-  sessions: AgentSession[]
-  selectedSessionId: number | null
+  templates: AgentSessionTemplate[]
+  canSaveTemplate: boolean
   configs: LLMConfig[]
   availableTools: Tool[]
   selectedTools: string[]
@@ -30,7 +30,6 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (e: 'update:selectedSessionId', val: number | null): void
   (e: 'update:selectedConfigId', val: number | null): void
   (e: 'update:systemPrompt', val: string): void
   (e: 'update:temperature', val: number): void
@@ -38,14 +37,16 @@ const emit = defineEmits<{
   (e: 'update:enable1mContext', val: boolean): void
   (e: 'update:isDeepAgent', val: boolean): void
   (e: 'update:enableRag', val: boolean): void
-  (e: 'create-session'): void
-  (e: 'delete-session'): void
+  (e: 'save-template'): void
+  (e: 'apply-template', templateId: number): void
+  (e: 'delete-template', templateId: number): void
   (e: 'toggle-tool', toolName: string): void
   (e: 'toggle-mcp', serverName: string): void
 }>()
 
 const showTools = ref(false)
 const showMcp = ref(false)
+const selectedTemplateId = ref<number | null>(null)
 const isEditingTemperature = ref(false)
 const isEditingMaxTokens = ref(false)
 const temperatureText = ref(String(props.temperature))
@@ -127,38 +128,64 @@ const normalizeMaxTokens = () => {
   emit('update:maxTokens', normalized)
 }
 
-const onSessionChange = (e: Event) => {
-  const target = e.target as HTMLSelectElement
-  emit('update:selectedSessionId', target.value ? Number(target.value) : null)
-}
-
 const onConfigChange = (e: Event) => {
   const target = e.target as HTMLSelectElement
   emit('update:selectedConfigId', target.value ? Number(target.value) : null)
+}
+
+watch(
+  () => props.templates,
+  (templates) => {
+    if (
+      selectedTemplateId.value
+      && !templates.some((template) => template.id === selectedTemplateId.value)
+    ) {
+      selectedTemplateId.value = null
+    }
+  },
+  { deep: true },
+)
+
+const onTemplateChange = (e: Event) => {
+  const target = e.target as HTMLSelectElement
+  selectedTemplateId.value = target.value ? Number(target.value) : null
+}
+
+const applySelectedTemplate = () => {
+  if (!selectedTemplateId.value) return
+  emit('apply-template', selectedTemplateId.value)
+}
+
+const deleteSelectedTemplate = () => {
+  if (!selectedTemplateId.value) return
+  emit('delete-template', selectedTemplateId.value)
 }
 </script>
 
 <template>
   <CardContent class="space-y-4 p-4">
     <div class="space-y-2">
-      <Label>Session</Label>
+      <Label>Templates</Label>
       <div class="flex gap-2">
         <select
-          :value="selectedSessionId"
-          @change="onSessionChange"
+          :value="selectedTemplateId"
+          @change="onTemplateChange"
           class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
           :disabled="isRunning"
         >
-          <option v-if="sessions.length === 0" disabled :value="null">No sessions</option>
-          <option v-for="session in sessions" :key="session.id" :value="session.id">
-            #{{ session.id }} · {{ session.title || 'Untitled' }}
+          <option :value="''">No template selected</option>
+          <option v-for="template in templates" :key="template.id" :value="template.id">
+            {{ template.name }}
           </option>
         </select>
         <div class="flex gap-1">
-          <Button type="button" variant="outline" size="icon" @click="emit('create-session')" :disabled="isRunning" title="New Session">
-            <Plus class="h-4 w-4" />
+          <Button type="button" variant="outline" size="icon" @click="emit('save-template')" :disabled="isRunning || !canSaveTemplate" title="Save Template">
+            <Save class="h-4 w-4" />
           </Button>
-          <Button type="button" variant="outline" size="icon" class="text-destructive hover:text-destructive hover:bg-destructive/10" @click="emit('delete-session')" :disabled="isRunning || !selectedSessionId" title="Delete Session">
+          <Button type="button" variant="outline" size="icon" @click="applySelectedTemplate" :disabled="isRunning || !selectedTemplateId" title="Apply Template">
+            <Check class="h-4 w-4" />
+          </Button>
+          <Button type="button" variant="outline" size="icon" class="text-destructive hover:text-destructive hover:bg-destructive/10" @click="deleteSelectedTemplate" :disabled="isRunning || !selectedTemplateId" title="Delete Template">
             <Trash2 class="h-4 w-4" />
           </Button>
         </div>

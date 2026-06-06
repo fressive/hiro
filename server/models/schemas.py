@@ -231,6 +231,57 @@ class AgentSessionResponse(BaseModel):
         from_attributes = True
 
 
+class AgentSessionTemplateCreate(BaseModel):
+    """Agent session settings template creation schema."""
+
+    name: str
+    config_id: Optional[int] = None
+    system_prompt: Optional[str] = None
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    enable_1m_context: Optional[bool] = None
+    is_deep_agent: Optional[bool] = None
+    enable_rag: Optional[bool] = None
+    tools: Optional[List[str]] = None
+    mcp_servers: Optional[List[str]] = None
+
+
+class AgentSessionTemplateUpdate(BaseModel):
+    """Agent session settings template update schema."""
+
+    name: Optional[str] = None
+    config_id: Optional[int] = None
+    system_prompt: Optional[str] = None
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    enable_1m_context: Optional[bool] = None
+    is_deep_agent: Optional[bool] = None
+    enable_rag: Optional[bool] = None
+    tools: Optional[List[str]] = None
+    mcp_servers: Optional[List[str]] = None
+
+
+class AgentSessionTemplateResponse(BaseModel):
+    """Agent session settings template response schema."""
+
+    id: int
+    name: str
+    config_id: Optional[int] = None
+    system_prompt: Optional[str] = None
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    enable_1m_context: Optional[bool] = None
+    is_deep_agent: Optional[bool] = None
+    enable_rag: Optional[bool] = False
+    tools: Optional[List[str]] = None
+    mcp_servers: Optional[List[str]] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
 class AgentMessageResponse(BaseModel):
     """Agent message response schema."""
 
