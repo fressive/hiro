@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { 
-  Check, Save, Trash2, Loader2, ChevronUp, ChevronDown
+  Save, Trash2, Loader2, ChevronUp, ChevronDown
 } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
@@ -148,12 +148,11 @@ watch(
 
 const onTemplateChange = (e: Event) => {
   const target = e.target as HTMLSelectElement
-  selectedTemplateId.value = target.value ? Number(target.value) : null
-}
-
-const applySelectedTemplate = () => {
-  if (!selectedTemplateId.value) return
-  emit('apply-template', selectedTemplateId.value)
+  const templateId = target.value ? Number(target.value) : null
+  selectedTemplateId.value = templateId
+  if (templateId) {
+    emit('apply-template', templateId)
+  }
 }
 
 const deleteSelectedTemplate = () => {
@@ -181,9 +180,6 @@ const deleteSelectedTemplate = () => {
         <div class="flex gap-1">
           <Button type="button" variant="outline" size="icon" @click="emit('save-template')" :disabled="isRunning || !canSaveTemplate" title="Save Template">
             <Save class="h-4 w-4" />
-          </Button>
-          <Button type="button" variant="outline" size="icon" @click="applySelectedTemplate" :disabled="isRunning || !selectedTemplateId" title="Apply Template">
-            <Check class="h-4 w-4" />
           </Button>
           <Button type="button" variant="outline" size="icon" class="text-destructive hover:text-destructive hover:bg-destructive/10" @click="deleteSelectedTemplate" :disabled="isRunning || !selectedTemplateId" title="Delete Template">
             <Trash2 class="h-4 w-4" />

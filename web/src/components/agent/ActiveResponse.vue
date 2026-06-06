@@ -16,7 +16,7 @@ const props = defineProps<{
 
 const outputLength = computed(() => props.output.length)
 
-const hasGraphActivity = computed(() => props.graphNodes.length > 0)
+const hasGraphActivity = computed(() => props.isRunning && props.graphNodes.length > 0)
 
 const hasResponseActivity = computed(() => {
   return outputLength.value > 0 || props.isRunning || Boolean(props.streamError) || hasGraphActivity.value
@@ -57,10 +57,14 @@ const graphConnectorClass = (index: number) => {
 
 const graphStatusLabel = (status: GraphNodeStatus) => {
   if (status === 'running') return 'Running'
-  if (status === 'done') return 'Done'
   if (status === 'skipped') return 'Skipped'
   if (status === 'error') return 'Error'
   return 'Pending'
+}
+
+const graphNodeCaption = (node: GraphNodeRecord) => {
+  if (node.status === 'done') return node.label
+  return graphStatusLabel(node.status)
 }
 </script>
 
@@ -90,7 +94,7 @@ const graphStatusLabel = (status: GraphNodeStatus) => {
               <div class="min-w-0">
                 <p class="truncate text-xs font-semibold" :title="node.label">{{ node.label }}</p>
                 <p class="truncate text-[10px] opacity-70">
-                  {{ graphStatusLabel(node.status) }}<template v-if="node.optional"> · Optional</template>
+                  {{ graphNodeCaption(node) }}<template v-if="node.optional"> · Optional</template>
                 </p>
               </div>
             </div>

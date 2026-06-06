@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import { AlertCircle, Bot, CheckCircle2, ChevronDown, ChevronRight, Circle, FileText, Loader2, MinusCircle, Wrench } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
-import type { AgentMessage, EventRecord, GraphNodeStatus } from '@/types/agent'
+import type { AgentMessage, EventRecord, GraphNodeRecord, GraphNodeStatus } from '@/types/agent'
 import { isJsonBlocks, parseJsonBlocks } from '@/lib/agent-utils'
 
 const props = defineProps<{
@@ -50,10 +50,14 @@ const graphConnectorClass = (index: number) => {
 
 const graphStatusLabel = (status: GraphNodeStatus) => {
   if (status === 'running') return 'Running'
-  if (status === 'done') return 'Done'
   if (status === 'skipped') return 'Skipped'
   if (status === 'error') return 'Error'
   return 'Pending'
+}
+
+const graphNodeCaption = (node: GraphNodeRecord) => {
+  if (node.status === 'done') return node.label
+  return graphStatusLabel(node.status)
 }
 </script>
 
@@ -98,7 +102,7 @@ const graphStatusLabel = (status: GraphNodeStatus) => {
               <div class="min-w-0">
                 <p class="truncate text-xs font-semibold" :title="node.label">{{ node.label }}</p>
                 <p class="truncate text-[10px] opacity-70">
-                  {{ graphStatusLabel(node.status) }}<template v-if="node.optional"> · Optional</template>
+                  {{ graphNodeCaption(node) }}<template v-if="node.optional"> · Optional</template>
                 </p>
               </div>
             </div>

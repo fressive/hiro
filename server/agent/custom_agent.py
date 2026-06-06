@@ -583,6 +583,73 @@ def attach_trace_metadata_fallback(messages: list[AgentMessage]) -> None:
     }
 
 
+def normalize_trace_metadata(messages: list[AgentMessage]) -> None:
+    """Keep graph/tool trace metadata on one assistant message per user turn."""
+    group: list[AgentMessage] = []
+    for message in messages:
+        if message.role == "user" and group:
+            _normalize_trace_metadata_group(group)
+            group = []
+        group.append(message)
+
+    if group:
+        _normalize_trace_metadata_group(group)
+
+
+def _normalize_trace_metadata_group(messages: list[AgentMessage]) -> None:
+    trace_messages = [
+        message
+        for message in messages
+        if message.role == "assistant" and _has_trace_metadata(message)
+    ]
+    if len(trace_messages) <= 1:
+        return
+
+    target = max(
+        trace_messages,
+        key=lambda message: (
+            _trace_message_score(message),
+            message.created_at,
+            message.id,
+        ),
+    )
+    for message in trace_messages:
+        if message is target:
+            continue
+        _clear_trace_metadata(message)
+
+
+def _has_trace_metadata(message: AgentMessage) -> bool:
+    metadata = message.extra_metadata
+    return bool(
+        isinstance(metadata, dict)
+        and (
+            metadata.get("graph_nodes")
+            or metadata.get("tool_events")
+            or metadata.get("mcp_events")
+        )
+    )
+
+
+def _trace_message_score(message: AgentMessage) -> int:
+    content = (message.content or "").strip()
+    has_tool_calls = bool(message.tool_calls)
+    if content and not has_tool_calls and not content.startswith("Error:"):
+        return 3
+    if content and not has_tool_calls:
+        return 2
+    if content:
+        return 1
+    return 0
+
+
+def _clear_trace_metadata(message: AgentMessage) -> None:
+    metadata = dict(message.extra_metadata or {})
+    for key in ("graph_nodes", "graph_edges", "tool_events", "mcp_events"):
+        metadata.pop(key, None)
+    message.extra_metadata = metadata or None
+
+
 def _fallback_graph_nodes(*, writeup_done: bool) -> list[dict[str, Any]]:
     nodes: list[dict[str, Any]] = []
     for node in _GRAPH_NODES:

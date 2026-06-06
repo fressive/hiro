@@ -710,8 +710,12 @@ const stopRun = async () => {
 }
 
 const clearOutput = () => {
-  output.value = []
   streamError.value = ''
+  clearLiveResponse()
+}
+
+const clearLiveResponse = () => {
+  output.value = []
   toolEvents.value = []
   mcpEvents.value = []
   graphNodes.value = []
@@ -840,12 +844,11 @@ const applyEvent = (event: string, payload: any) => {
 
   if (event === 'done') {
     isRunning.value = false
-    if (payload.text) {
-      output.value = [] // Clear streaming output as it's now in history
-    }
     if (payload.session_id) {
       fetchSessions()
-      fetchMessages(payload.session_id)
+      void fetchMessages(payload.session_id).finally(clearLiveResponse)
+    } else {
+      clearLiveResponse()
     }
     return
   }
