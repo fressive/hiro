@@ -1228,7 +1228,7 @@ class CustomAgent:
 
         if not found_configs:
             return []
-        return await McpService.load_mcp_tools(found_configs, exit_stack)
+        return await McpService.load_lazy_mcp_tools(found_configs, exit_stack)
 
     async def _load_history(
         self, *, user_msg_id: int, assistant_msg_id: int
@@ -1338,12 +1338,10 @@ class CustomAgent:
     def _build_system_prompt(self, mcp_tools: list[Any]) -> str:
         full_system_prompt = self.payload.system_prompt or ""
         if mcp_tools:
-            mcp_tools_info = "\n".join(
-                f"- {tool.name}: {tool.description}" for tool in mcp_tools
-            )
             full_system_prompt += (
-                "\n\nYou have access to the following MCP tools:\n"
-                f"{mcp_tools_info}"
+                "\n\nMCP access is lazy-loaded through two router tools: "
+                "use mcp_search to find available MCP tools and schemas, then "
+                "use mcp_call with the exact tool_name and JSON arguments."
             )
         if self.rag_context:
             full_system_prompt += (
