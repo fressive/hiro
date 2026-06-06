@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { apiFetch } from '@/lib/api'
 
-import type { LLMConfig, Tool, EventRecord, AgentSession, MCPServer, AgentMessage } from '@/types/agent'
+import type { LLMConfig, Tool, EventRecord, AgentSession, MCPServer, AgentMessage, GraphNodeRecord, GraphNodeStatus } from '@/types/agent'
 import MessageItem from '@/components/agent/MessageItem.vue'
 import AgentSettings from '@/components/agent/AgentSettings.vue'
 import ActiveResponse from '@/components/agent/ActiveResponse.vue'
@@ -33,6 +33,7 @@ const streamError = ref('')
 const streamController = ref<AbortController | null>(null)
 const toolEvents = ref<EventRecord[]>([])
 const mcpEvents = ref<EventRecord[]>([])
+const graphNodes = ref<GraphNodeRecord[]>([])
 const ragSources = ref<string[]>([])
 const sessions = ref<AgentSession[]>([])
 const selectedSessionId = ref<number | null>(null)
@@ -118,8 +119,16 @@ const canRun = computed(() => {
   return Boolean(prompt.value.trim()) && Boolean(selectedConfigId.value) && !isRunning.value
 })
 
+const isAssistantPlaceholder = (message: AgentMessage) => {
+  return (
+    message.role === 'assistant'
+    && !message.content.trim()
+    && (!message.tool_calls || message.tool_calls.length === 0)
+  )
+}
+
 const displayMessages = computed(() => {
-  const items = [...messages.value]
+  const items = messages.value.filter((message) => !isAssistantPlaceholder(message))
   const draft = prompt.value.trim()
   if (!draft) return items
 
@@ -416,6 +425,7 @@ const clearOutput = () => {
   streamError.value = ''
   toolEvents.value = []
   mcpEvents.value = []
+  graphNodes.value = []
   ragSources.value = []
 }
 
@@ -459,6 +469,25 @@ const upsertEvent = (target: EventRecord[], incoming: EventRecord) => {
   }
 }
 
+const upsertGraphNode = (incoming: Partial<GraphNodeRecord> & { id: string, status?: GraphNodeStatus }) => {
+  const index = graphNodes.value.findIndex((item) => item.id === incoming.id)
+  if (index >= 0) {
+    graphNodes.value[index] = {
+      ...graphNodes.value[index],
+      ...incoming,
+      status: incoming.status || graphNodes.value[index].status,
+    }
+  } else {
+    graphNodes.value.push({
+      id: incoming.id,
+      label: incoming.label || incoming.id,
+      description: incoming.description,
+      status: incoming.status || 'pending',
+      optional: incoming.optional,
+    })
+  }
+}
+
 const applyEvent = (event: string, payload: any) => {
   if (event === 'token') {
     const text = payload.text
@@ -486,6 +515,32 @@ const applyEvent = (event: string, payload: any) => {
   if (event === 'rag_search') {
     if (Array.isArray(payload.sources)) {
       ragSources.value = payload.sources
+    }
+    return
+  }
+
+  if (event === 'graph_init') {
+    if (Array.isArray(payload.nodes)) {
+      graphNodes.value = payload.nodes.map((node: any) => ({
+        id: node.id,
+        label: node.label || node.id,
+        description: node.description,
+        status: node.status || 'pending',
+        optional: node.optional,
+      }))
+    }
+    return
+  }
+
+  if (event === 'graph_node') {
+    if (payload.id) {
+      upsertGraphNode({
+        id: payload.id,
+        label: payload.label,
+        description: payload.description,
+        status: payload.status || 'running',
+        optional: payload.optional,
+      })
     }
     return
   }
@@ -709,6 +764,7 @@ watch(
                         :rag-sources="ragSources"
                         :tool-events="toolEvents"
                         :mcp-events="mcpEvents"
+                        :graph-nodes="graphNodes"
                       />
                     </div>
                   </CardContent>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { Bot, FileText, Loader2, CheckCircle2, ChevronDown, ChevronRight } from '@lucide/vue'
-import type { EventRecord } from '@/types/agent'
+import { AlertCircle, Bot, CheckCircle2, ChevronDown, ChevronRight, Circle, FileText, Loader2, MinusCircle } from '@lucide/vue'
+import type { EventRecord, GraphNodeRecord, GraphNodeStatus } from '@/types/agent'
 import { isJsonBlocks, parseJsonBlocks } from '@/lib/agent-utils'
 
 const props = defineProps<{
@@ -11,7 +11,16 @@ const props = defineProps<{
   ragSources: string[]
   toolEvents: EventRecord[]
   mcpEvents: EventRecord[]
+  graphNodes: GraphNodeRecord[]
 }>()
+
+const outputLength = computed(() => props.output.length)
+
+const hasGraphActivity = computed(() => props.graphNodes.length > 0)
+
+const hasResponseActivity = computed(() => {
+  return outputLength.value > 0 || props.isRunning || Boolean(props.streamError) || hasGraphActivity.value
+})
 
 const blocks = computed(() => {
   if (Array.isArray(props.output)) return props.output
@@ -19,17 +28,83 @@ const blocks = computed(() => {
   return []
 })
 
+const activeGraphNode = computed(() => {
+  return props.graphNodes.find((node) => node.status === 'running') || null
+})
+
 const expandedToolEvents = ref<Record<string, boolean>>({})
 
 const toggleToolEvent = (id: string) => {
   expandedToolEvents.value[id] = !expandedToolEvents.value[id]
 }
+
+const graphNodeClass = (status: GraphNodeStatus) => {
+  if (status === 'running') return 'border-primary bg-primary/10 text-primary shadow-sm'
+  if (status === 'done') return 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+  if (status === 'skipped') return 'border-muted bg-muted/40 text-muted-foreground'
+  if (status === 'error') return 'border-destructive/50 bg-destructive/10 text-destructive'
+  return 'border-border bg-background text-muted-foreground'
+}
+
+const graphConnectorClass = (index: number) => {
+  const current = props.graphNodes[index]
+  const next = props.graphNodes[index + 1]
+  if (current?.status === 'error' || next?.status === 'error') return 'bg-destructive/50'
+  if (current?.status === 'done' && next?.status !== 'pending') return 'bg-primary/60'
+  if (current?.status === 'done') return 'bg-primary/30'
+  return 'bg-border'
+}
+
+const graphStatusLabel = (status: GraphNodeStatus) => {
+  if (status === 'running') return 'Running'
+  if (status === 'done') return 'Done'
+  if (status === 'skipped') return 'Skipped'
+  if (status === 'error') return 'Error'
+  return 'Pending'
+}
 </script>
 
 <template>
-  <div v-if="output.length > 0 || isRunning || streamError" class="rounded-lg border p-3 text-sm shadow-sm">
+  <div v-if="hasResponseActivity" class="rounded-lg border p-3 text-sm shadow-sm">
+    <div v-if="graphNodes.length > 0" class="mb-3 rounded-lg border bg-muted/20 p-3">
+      <div class="flex items-center justify-between gap-3">
+        <p class="text-xs font-semibold text-muted-foreground">Execution Graph</p>
+        <span class="max-w-[55%] truncate text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+          {{ activeGraphNode ? activeGraphNode.label : (isRunning ? 'Starting' : 'Complete') }}
+        </span>
+      </div>
+      <div class="mt-3 overflow-x-auto pb-1">
+        <div class="flex min-w-max items-center gap-2">
+          <template v-for="(node, index) in graphNodes" :key="node.id">
+            <div
+              :class="['flex h-16 w-32 shrink-0 items-center gap-2 rounded-md border px-2 transition-colors', graphNodeClass(node.status)]"
+              :title="node.description || node.label"
+            >
+              <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-background/80">
+                <Loader2 v-if="node.status === 'running'" class="h-4 w-4 animate-spin" />
+                <CheckCircle2 v-else-if="node.status === 'done'" class="h-4 w-4" />
+                <MinusCircle v-else-if="node.status === 'skipped'" class="h-4 w-4" />
+                <AlertCircle v-else-if="node.status === 'error'" class="h-4 w-4" />
+                <Circle v-else class="h-4 w-4" />
+              </div>
+              <div class="min-w-0">
+                <p class="truncate text-xs font-semibold" :title="node.label">{{ node.label }}</p>
+                <p class="truncate text-[10px] opacity-70">
+                  {{ graphStatusLabel(node.status) }}<template v-if="node.optional"> · Optional</template>
+                </p>
+              </div>
+            </div>
+            <div
+              v-if="index < graphNodes.length - 1"
+              :class="['h-px w-8 shrink-0 transition-colors', graphConnectorClass(index)]"
+            />
+          </template>
+        </div>
+      </div>
+    </div>
+
     <p class="text-xs font-semibold text-muted-foreground mb-2">Assistant</p>
-    <div v-if="isRunning && output.length === 0" class="space-y-3">
+    <div v-if="isRunning && outputLength === 0" class="space-y-3">
       <div class="h-4 w-2/3 rounded bg-muted animate-pulse" />
       <div class="h-4 w-5/6 rounded bg-muted animate-pulse" />
       <div class="h-4 w-1/2 rounded bg-muted animate-pulse" />

@@ -19,6 +19,22 @@ export type EventRecord = {
   output?: string
 }
 
+export type GraphNodeStatus = 'pending' | 'running' | 'done' | 'skipped' | 'error'
+
+export type GraphNodeRecord = {
+  id: string
+  label: string
+  description?: string
+  status: GraphNodeStatus
+  optional?: boolean
+}
+
+export type GraphEdgeRecord = {
+  from: string
+  to: string
+  condition?: string
+}
+
 export type AgentSession = {
   id: number
   title?: string | null
