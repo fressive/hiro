@@ -45,7 +45,7 @@ from server.models.models import (
 )
 from server.core.logger import logger
 from server.core.util import get_data_path
-from server.models.schemas import (
+from server.schemas.agent import (
     AgentRunRequest,
     AgentSessionCreate,
     AgentSessionUpdate,

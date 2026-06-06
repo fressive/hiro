@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from server.core.security import hash_password
 from server.db import get_session
 from server.models.models import User
-from server.models.schemas import UserCreate, UserResponse
+from server.schemas.users import UserCreate, UserResponse
 
 router = APIRouter()
 

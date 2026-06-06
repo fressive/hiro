@@ -34,7 +34,7 @@ from server.core.logger import logger
 from server.core.util import get_data_path
 from server.db import AsyncSessionLocal
 from server.models.models import AgentMessage, AgentSession, LLMConfig, MCPServerConfig
-from server.models.schemas import AgentRunRequest
+from server.schemas.agent import AgentRunRequest
 from server.service.mcp_service import McpService
 from server.service.rag_service import RagService
 

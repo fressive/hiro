@@ -5,7 +5,7 @@ from datetime import timedelta
 from sqlalchemy import select
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from server.models.schemas import TokenResponse
+from server.schemas.auth import TokenResponse
 from server.core.security import create_access_token, verify_password
 from server.db import get_session
 from server.models.models import User

@@ -1,0 +1,152 @@
+"""Agent session schemas."""
+
+from datetime import datetime
+from typing import List, Optional
+
+from pydantic import BaseModel
+
+
+class AgentRunRequest(BaseModel):
+    """Agent run request schema."""
+
+    config_id: int
+    input: str
+    session_id: Optional[int] = None
+    system_prompt: Optional[str] = None
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    enable_1m_context: Optional[bool] = None
+    is_deep_agent: Optional[bool] = True
+    enable_rag: Optional[bool] = False
+    tools: Optional[List[str]] = None
+    mcp_servers: Optional[List[str]] = None
+
+
+class ToolResponse(BaseModel):
+    """Tool information response schema."""
+
+    name: str
+    description: str
+
+
+class AgentSessionCreate(BaseModel):
+    """Agent session creation schema."""
+
+    title: Optional[str] = None
+
+
+class AgentSessionUpdate(BaseModel):
+    """Agent session update schema."""
+
+    title: Optional[str] = None
+    config_id: Optional[int] = None
+    system_prompt: Optional[str] = None
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    enable_1m_context: Optional[bool] = None
+    is_deep_agent: Optional[bool] = None
+    enable_rag: Optional[bool] = None
+    tools: Optional[List[str]] = None
+    mcp_servers: Optional[List[str]] = None
+
+
+class AgentSessionResponse(BaseModel):
+    """Agent session response schema."""
+
+    id: int
+    title: Optional[str] = None
+    config_id: Optional[int] = None
+    system_prompt: Optional[str] = None
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    enable_1m_context: Optional[bool] = None
+    is_deep_agent: Optional[bool] = None
+    enable_rag: Optional[bool] = False
+    tools: Optional[List[str]] = None
+    mcp_servers: Optional[List[str]] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class AgentSessionTemplateCreate(BaseModel):
+    """Agent session settings template creation schema."""
+
+    name: str
+    config_id: Optional[int] = None
+    system_prompt: Optional[str] = None
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    enable_1m_context: Optional[bool] = None
+    is_deep_agent: Optional[bool] = None
+    enable_rag: Optional[bool] = None
+    tools: Optional[List[str]] = None
+    mcp_servers: Optional[List[str]] = None
+
+
+class AgentSessionTemplateUpdate(BaseModel):
+    """Agent session settings template update schema."""
+
+    name: Optional[str] = None
+    config_id: Optional[int] = None
+    system_prompt: Optional[str] = None
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    enable_1m_context: Optional[bool] = None
+    is_deep_agent: Optional[bool] = None
+    enable_rag: Optional[bool] = None
+    tools: Optional[List[str]] = None
+    mcp_servers: Optional[List[str]] = None
+
+
+class AgentSessionTemplateResponse(BaseModel):
+    """Agent session settings template response schema."""
+
+    id: int
+    name: str
+    config_id: Optional[int] = None
+    system_prompt: Optional[str] = None
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    enable_1m_context: Optional[bool] = None
+    is_deep_agent: Optional[bool] = None
+    enable_rag: Optional[bool] = False
+    tools: Optional[List[str]] = None
+    mcp_servers: Optional[List[str]] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class AgentMessageResponse(BaseModel):
+    """Agent message response schema."""
+
+    id: int
+    session_id: int
+    role: str
+    content: str
+    name: Optional[str] = None
+    tool_call_id: Optional[str] = None
+    tool_calls: Optional[List[dict]] = None
+    extra_metadata: Optional[dict] = None
+    input_tokens: Optional[int] = None
+    cached_input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    model: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SessionFileResponse(BaseModel):
+    """Session file response schema."""
+
+    path: str
+    size: int
+    modified_at: datetime
+    type: str  # "file" or "directory"

@@ -14,7 +14,7 @@ from server.core.installation import (
     is_application_installed,
     verify_database_connection,
 )
-from server.models.schemas import (
+from server.schemas.installation import (
     InstallationRequest,
     InstallationResponse,
     InstallationStatusResponse,
@@ -108,4 +108,3 @@ async def install_application(payload: InstallationRequest, background_tasks: Ba
     background_tasks.add_task(_restart_process)
 
     return InstallationResponse(installed=True, message="Application installed successfully")
-

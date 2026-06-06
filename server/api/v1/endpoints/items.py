@@ -3,7 +3,7 @@
 from fastapi import APIRouter, HTTPException
 from typing import List
 
-from server.models.schemas import ItemResponse, ItemCreate
+from server.schemas.items import ItemResponse, ItemCreate
 
 router = APIRouter()
 

@@ -10,7 +10,7 @@ from server.agent.custom_agent import (
     _StreamCallbackHandler,
 )
 from server.models.models import LLMConfig
-from server.models.schemas import AgentRunRequest
+from server.schemas.agent import AgentRunRequest
 
 
 def _parse_stream_event(raw_event: AgentStreamEvent):

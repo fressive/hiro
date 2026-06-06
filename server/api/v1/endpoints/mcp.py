@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db import get_session
 from server.models.models import MCPServerConfig
-from server.models.schemas import (
+from server.schemas.mcp import (
     MCPServerConfigCreate,
     MCPServerConfigUpdate,
     MCPServerConfigResponse,
