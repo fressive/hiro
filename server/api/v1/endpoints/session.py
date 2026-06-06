@@ -5,15 +5,25 @@ import os
 import shutil
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import List
+from typing import Any, List
 
-from fastapi import APIRouter, Depends, HTTPException, File, UploadFile
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    File,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from fastapi.responses import FileResponse
+from pydantic import ValidationError
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
 from server.agent.custom_agent import (
+    AgentStreamEvent,
     CustomAgent,
     _add_token_usage,
     _llm_result_token_usage,
@@ -21,9 +31,11 @@ from server.agent.custom_agent import (
     _normalize_token_usage,
     _stream_text_segments,
     _subtract_token_usage,
+    attach_trace_metadata_fallback,
 )
+from server.agent.session_events import SessionEventHub
 from server.agent.tools import agent_tools
-from server.db import get_session
+from server.db import AsyncSessionLocal, get_session
 from server.models.models import LLMConfig, AgentSession, AgentMessage
 from server.core.logger import logger
 from server.core.util import get_data_path
@@ -41,48 +53,98 @@ router = APIRouter()
 
 # Global registry for active agent tasks: session_id -> asyncio.Task
 _active_agent_tasks: dict[int, asyncio.Task] = {}
+_session_event_hubs: dict[int, SessionEventHub] = {}
 
 
-@router.post("/sessions/{session_id}/stop")
-async def stop_agent(session_id: int):
-    """Stop a running agent task for the given session."""
+def _is_session_running(session_id: int) -> bool:
     task = _active_agent_tasks.get(session_id)
-    if not task or task.done():
-        return {"message": "No active agent task found for this session"}
-    
-    task.cancel()
+    if task is None:
+        return False
+    if task.done():
+        _active_agent_tasks.pop(session_id, None)
+        return False
+    return True
+
+
+def _get_session_hub(session_id: int) -> SessionEventHub:
+    hub = _session_event_hubs.get(session_id)
+    if hub is None:
+        hub = SessionEventHub()
+        _session_event_hubs[session_id] = hub
+    return hub
+
+
+def _cleanup_session_hub(session_id: int) -> None:
+    hub = _session_event_hubs.get(session_id)
+    if hub is not None and not hub.has_subscribers and not _is_session_running(session_id):
+        _session_event_hubs.pop(session_id, None)
+
+
+async def _bridge_agent_events(
+    session_id: int,
+    source_queue: asyncio.Queue[AgentStreamEvent | None],
+    hub: SessionEventHub,
+) -> None:
     try:
-        await task
+        while True:
+            event = await source_queue.get()
+            if event is None:
+                break
+            await hub.publish(event)
     except asyncio.CancelledError:
-        pass
-    
-    if session_id in _active_agent_tasks:
-        del _active_agent_tasks[session_id]
-        
-    return {"message": "Agent task stopped successfully"}
+        raise
+    except Exception as exc:
+        logger.error("Agent event bridge failed for session %s: %s", session_id, exc)
+    finally:
+        task = _active_agent_tasks.get(session_id)
+        if task is not None and task.done():
+            _active_agent_tasks.pop(session_id, None)
+        await hub.publish_status(is_running=False)
+        _cleanup_session_hub(session_id)
 
 
-@router.get("/tools", response_model=List[ToolResponse])
-async def list_tools():
-    """List all available tools."""
-    return [
-        ToolResponse(name=tool.name, description=tool.description)
-        for tool in agent_tools
-    ]
+async def _session_exists(session_id: int) -> bool:
+    async with AsyncSessionLocal() as db_session:
+        result = await db_session.execute(
+            select(AgentSession.id).where(AgentSession.id == session_id)
+        )
+        return result.scalar_one_or_none() is not None
 
 
-@router.get("/sessions/{session_id}/status")
-async def get_session_status(session_id: int):
-    """Check if an agent is currently running for this session."""
-    task = _active_agent_tasks.get(session_id)
-    return {"is_running": task is not None and not task.done()}
+async def _send_websocket_events(
+    websocket: WebSocket,
+    hub: SessionEventHub,
+    queue: asyncio.Queue[AgentStreamEvent | None],
+) -> None:
+    try:
+        while True:
+            event = await queue.get()
+            if event is None:
+                break
+            await websocket.send_json(event.as_json())
+    finally:
+        hub.unsubscribe(queue)
 
 
-@router.post("/run")
-async def run_agent(
-    payload: AgentRunRequest, session: AsyncSession = Depends(get_session)
-):
-    """Stream agent output using a configured LLM."""
+async def _publish_websocket_error(
+    hub: SessionEventHub,
+    *,
+    session_id: int,
+    message: str,
+) -> None:
+    await hub.publish(
+        AgentStreamEvent(
+            event="error",
+            data={"message": message, "session_id": session_id},
+        )
+    )
+
+
+async def _start_agent_run(
+    payload: AgentRunRequest,
+    session: AsyncSession,
+) -> AgentSession:
+    """Start an agent task. Live events are published to the session hub."""
     if not payload.input.strip():
         raise HTTPException(status_code=400, detail="Input is required")
 
@@ -105,10 +167,11 @@ async def run_agent(
         await session.refresh(active_session)
 
     # Check if already running
-    if active_session.id in _active_agent_tasks:
-        task = _active_agent_tasks[active_session.id]
-        if not task.done():
-            raise HTTPException(status_code=409, detail="An agent is already running for this session")
+    if _is_session_running(active_session.id):
+        raise HTTPException(
+            status_code=409,
+            detail="An agent is already running for this session",
+        )
 
     # Save/Update session configuration from the request
     active_session.config_id = payload.config_id
@@ -145,15 +208,177 @@ async def run_agent(
         config=config,
     )
 
-    return StreamingResponse(
-        custom_agent.stream(
+    hub = _get_session_hub(active_session_id)
+    hub.reset_replay()
+    source_queue: asyncio.Queue[AgentStreamEvent | None] = asyncio.Queue()
+    try:
+        await custom_agent.start(
+            source_queue,
             on_task_started=lambda task: _active_agent_tasks.__setitem__(
                 active_session_id, task
             ),
             on_task_done=lambda: _active_agent_tasks.pop(active_session_id, None),
-        ),
-        media_type="text/event-stream",
+        )
+    except Exception:
+        _cleanup_session_hub(active_session_id)
+        raise
+
+    await hub.publish_status(is_running=True)
+    asyncio.create_task(_bridge_agent_events(active_session_id, source_queue, hub))
+    return active_session
+
+
+async def _stop_agent_run(session_id: int) -> bool:
+    """Cancel a running agent task. Returns whether a task was cancelled."""
+    task = _active_agent_tasks.get(session_id)
+    hub = _get_session_hub(session_id)
+    if not task or task.done():
+        _active_agent_tasks.pop(session_id, None)
+        await hub.publish_status(is_running=False)
+        _cleanup_session_hub(session_id)
+        return False
+
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    _active_agent_tasks.pop(session_id, None)
+    await hub.publish_status(is_running=False)
+    _cleanup_session_hub(session_id)
+    return True
+
+
+async def _handle_websocket_command(
+    session_id: int,
+    message: dict[str, Any],
+    hub: SessionEventHub,
+) -> None:
+    command = message.get("type") or message.get("event")
+    if command == "run":
+        raw_payload = dict(message.get("payload") or {})
+        raw_payload["session_id"] = session_id
+        try:
+            payload = AgentRunRequest.model_validate(raw_payload)
+        except ValidationError as exc:
+            await _publish_websocket_error(
+                hub,
+                session_id=session_id,
+                message=str(exc),
+            )
+            if not _is_session_running(session_id):
+                await hub.publish_status(is_running=False)
+            return
+
+        try:
+            async with AsyncSessionLocal() as db_session:
+                await _start_agent_run(payload, db_session)
+        except HTTPException as exc:
+            await _publish_websocket_error(
+                hub,
+                session_id=session_id,
+                message=str(exc.detail),
+            )
+            if not _is_session_running(session_id):
+                await hub.publish_status(is_running=False)
+        except Exception as exc:
+            logger.error("Failed to start websocket agent run: %s", exc)
+            await _publish_websocket_error(
+                hub,
+                session_id=session_id,
+                message=str(exc),
+            )
+            if not _is_session_running(session_id):
+                await hub.publish_status(is_running=False)
+        return
+
+    if command == "stop":
+        await _stop_agent_run(session_id)
+        return
+
+    if command == "status":
+        await hub.publish_status(is_running=_is_session_running(session_id))
+        return
+
+    await _publish_websocket_error(
+        hub,
+        session_id=session_id,
+        message=f"Unknown websocket command: {command}",
     )
+
+
+@router.websocket("/sessions/{session_id}/ws")
+async def session_websocket(websocket: WebSocket, session_id: int):
+    """Live session channel for agent status, graph, tool, and token events."""
+    if not await _session_exists(session_id):
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept()
+    hub = _get_session_hub(session_id)
+    queue = hub.subscribe(replay=_is_session_running(session_id))
+    queue.put_nowait(
+        AgentStreamEvent(
+            event="status",
+            data={"is_running": _is_session_running(session_id)},
+        )
+    )
+    send_task = asyncio.create_task(_send_websocket_events(websocket, hub, queue))
+    try:
+        while True:
+            message = await websocket.receive_json()
+            if isinstance(message, dict):
+                await _handle_websocket_command(session_id, message, hub)
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        logger.warning("Session websocket closed with error: %s", exc)
+    finally:
+        send_task.cancel()
+        try:
+            await send_task
+        except asyncio.CancelledError:
+            pass
+        hub.unsubscribe(queue)
+        _cleanup_session_hub(session_id)
+
+
+@router.post("/sessions/{session_id}/stop")
+async def stop_agent(session_id: int):
+    """Stop a running agent task for the given session."""
+    stopped = await _stop_agent_run(session_id)
+    if not stopped:
+        return {"message": "No active agent task found for this session"}
+    return {"message": "Agent task stopped successfully"}
+
+
+@router.get("/tools", response_model=List[ToolResponse])
+async def list_tools():
+    """List all available tools."""
+    return [
+        ToolResponse(name=tool.name, description=tool.description)
+        for tool in agent_tools
+    ]
+
+
+@router.get("/sessions/{session_id}/status")
+async def get_session_status(session_id: int):
+    """Check if an agent is currently running for this session."""
+    return {"is_running": _is_session_running(session_id)}
+
+
+@router.post("/run")
+async def run_agent(
+    payload: AgentRunRequest, session: AsyncSession = Depends(get_session)
+):
+    """Start an agent run. Subscribe to /sessions/{id}/ws for live events."""
+    active_session = await _start_agent_run(payload, session)
+    return {
+        "session_id": active_session.id,
+        "title": active_session.title,
+        "is_running": True,
+    }
 
 
 @router.get("/sessions", response_model=list[AgentSessionResponse])
@@ -218,7 +443,9 @@ async def list_messages(session_id: int, session: AsyncSession = Depends(get_ses
         .where(AgentMessage.session_id == session_id)
         .order_by(AgentMessage.created_at.asc())
     )
-    return result.scalars().all()
+    messages = list(result.scalars().all())
+    attach_trace_metadata_fallback(messages)
+    return messages
 
 
 @router.delete("/sessions/{session_id}")
@@ -229,6 +456,11 @@ async def delete_session(session_id: int, session: AsyncSession = Depends(get_se
     active = result.scalars().first()
     if not active:
         raise HTTPException(status_code=404, detail="Session not found")
+
+    await _stop_agent_run(session_id)
+    hub = _session_event_hubs.pop(session_id, None)
+    if hub is not None:
+        await hub.close()
 
     # Delete the data folder if it exists
     data_path = get_data_path(session_id)

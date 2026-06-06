@@ -5,7 +5,7 @@ import json
 from contextlib import AsyncExitStack, suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, AsyncGenerator, Callable, TypedDict
+from typing import Any, Callable, TypedDict
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
@@ -39,9 +39,17 @@ from server.service.mcp_service import McpService
 from server.service.rag_service import RagService
 
 
-def _format_sse(event: str, data: dict) -> str:
-    payload = json.dumps(data, ensure_ascii=True)
-    return f"event: {event}\ndata: {payload}\n\n"
+@dataclass(frozen=True)
+class AgentStreamEvent:
+    event: str
+    data: dict[str, Any]
+
+    def as_json(self) -> dict[str, Any]:
+        return {"event": self.event, "data": self.data}
+
+
+def _stream_event(event: str, data: dict[str, Any]) -> AgentStreamEvent:
+    return AgentStreamEvent(event=event, data=data)
 
 
 def _tool_event_name(tool_name: str, phase: str) -> str:
@@ -370,12 +378,18 @@ def _apply_token_usage(message: AgentMessage, usage: dict[str, int]) -> None:
 
 
 class _StreamCallbackHandler(BaseCallbackHandler):
-    def __init__(self, queue: asyncio.Queue, loop: asyncio.AbstractEventLoop):
+    def __init__(
+        self,
+        queue: asyncio.Queue[AgentStreamEvent | None],
+        loop: asyncio.AbstractEventLoop,
+    ):
         self._queue = queue
         self._loop = loop
         self._tool_names: list[str] = []
         self._mcp_names: list[str] = []
         self._tool_run_map: dict[str, str] = {}
+        self._tool_events: list[dict[str, Any]] = []
+        self._mcp_events: list[dict[str, Any]] = []
         self._token_buffer: list[str] = []
         self._usage: dict[str, int] = _empty_token_usage()
 
@@ -391,10 +405,32 @@ class _StreamCallbackHandler(BaseCallbackHandler):
     def usage(self) -> dict[str, int]:
         return self._usage
 
+    @property
+    def tool_events(self) -> list[dict[str, Any]]:
+        return [dict(event) for event in self._tool_events]
+
+    @property
+    def mcp_events(self) -> list[dict[str, Any]]:
+        return [dict(event) for event in self._mcp_events]
+
     def _enqueue(self, event: str, data: dict) -> None:
         asyncio.run_coroutine_threadsafe(
-            self._queue.put(_format_sse(event, data)), self._loop
+            self._queue.put(_stream_event(event, data)), self._loop
         )
+
+    def _event_collection(self, tool_name: str) -> list[dict[str, Any]]:
+        if tool_name.startswith("mcp__"):
+            return self._mcp_events
+        return self._tool_events
+
+    def _upsert_tool_event(self, tool_name: str, event: dict[str, Any]) -> None:
+        events = self._event_collection(tool_name)
+        event_id = event["id"]
+        for index, existing in enumerate(events):
+            if existing["id"] == event_id:
+                events[index] = {**existing, **event}
+                return
+        events.append(event)
 
     def on_llm_new_token(self, token: Any, **kwargs: Any) -> None:
         segments = _stream_text_segments(token)
@@ -425,9 +461,20 @@ class _StreamCallbackHandler(BaseCallbackHandler):
         else:
             self._tool_names.append(tool_name)
 
-        run_id = str(kwargs.get("run_id", ""))
-        if run_id:
-            self._tool_run_map[run_id] = tool_name
+        run_id = str(
+            kwargs.get("run_id")
+            or f"{tool_name}-{len(self._tool_events) + len(self._mcp_events) + 1}"
+        )
+        self._tool_run_map[run_id] = tool_name
+        self._upsert_tool_event(
+            tool_name,
+            {
+                "id": run_id,
+                "name": tool_name,
+                "status": "running",
+                "input": str(input_str),
+            },
+        )
         self._enqueue(
             _tool_event_name(tool_name, "start"),
             {"id": run_id, "name": tool_name, "input": str(input_str)},
@@ -436,15 +483,41 @@ class _StreamCallbackHandler(BaseCallbackHandler):
     def on_tool_end(self, output: Any, **kwargs: Any) -> None:
         run_id = str(kwargs.get("run_id", ""))
         tool_name = self._tool_run_map.get(run_id, "tool")
+        self._upsert_tool_event(
+            tool_name,
+            {
+                "id": run_id,
+                "name": tool_name,
+                "status": "done",
+                "output": str(output),
+            },
+        )
         self._enqueue(
             _tool_event_name(tool_name, "end"),
             {"id": run_id, "name": tool_name, "output": str(output)},
         )
 
+    def on_tool_error(self, error: BaseException, **kwargs: Any) -> None:
+        run_id = str(kwargs.get("run_id", ""))
+        tool_name = self._tool_run_map.get(run_id, "tool")
+        self._upsert_tool_event(
+            tool_name,
+            {
+                "id": run_id,
+                "name": tool_name,
+                "status": "error",
+                "output": str(error),
+            },
+        )
+        self._enqueue(
+            _tool_event_name(tool_name, "error"),
+            {"id": run_id, "name": tool_name, "output": str(error)},
+        )
+
 
 @dataclass
 class _AgentRunContext:
-    queue: asyncio.Queue[str | None]
+    queue: asyncio.Queue[AgentStreamEvent | None]
     callback: _StreamCallbackHandler
     agent_done: asyncio.Event
     exit_stack: AsyncExitStack
@@ -457,10 +530,116 @@ class _AgentRunContext:
     all_messages: list[Any] = field(default_factory=list)
     assistant_text: str = ""
     writeup_text: str = ""
+    mcp_tools_loaded: bool = False
+    graph_nodes: list[dict[str, Any]] = field(
+        default_factory=lambda: [
+            {
+                "id": node["id"],
+                "label": node["label"],
+                "description": node.get("description"),
+                "optional": node.get("optional", False),
+                "status": "pending",
+            }
+            for node in _GRAPH_NODES
+        ]
+    )
 
 
 class _AgentGraphState(TypedDict):
     run: _AgentRunContext
+
+
+def attach_trace_metadata_fallback(messages: list[AgentMessage]) -> None:
+    """Populate graph/tool trace metadata for older messages that lack it."""
+    if not messages:
+        return
+
+    assistant_messages = [message for message in messages if message.role == "assistant"]
+    if not assistant_messages:
+        return
+
+    if any(
+        isinstance(message.extra_metadata, dict)
+        and message.extra_metadata.get("graph_nodes")
+        for message in assistant_messages
+    ):
+        return
+
+    tool_events = _reconstruct_tool_events(messages)
+    target = next(
+        (
+            message
+            for message in reversed(assistant_messages)
+            if message.content or message.tool_calls
+        ),
+        assistant_messages[-1],
+    )
+    target.extra_metadata = {
+        **(target.extra_metadata or {}),
+        "graph_nodes": _fallback_graph_nodes(writeup_done=_looks_like_writeup(target.content)),
+        "graph_edges": _GRAPH_EDGES,
+        "tool_events": tool_events,
+        "mcp_events": [],
+    }
+
+
+def _fallback_graph_nodes(*, writeup_done: bool) -> list[dict[str, Any]]:
+    nodes: list[dict[str, Any]] = []
+    for node in _GRAPH_NODES:
+        status = "done"
+        if node["id"] == "writeup" and not writeup_done:
+            status = "skipped"
+        nodes.append(
+            {
+                "id": node["id"],
+                "label": node["label"],
+                "description": node.get("description"),
+                "optional": node.get("optional", False),
+                "status": status,
+            }
+        )
+    return nodes
+
+
+def _looks_like_writeup(content: str | None) -> bool:
+    if not content:
+        return False
+    normalized = content.lower()
+    return "# report" in normalized or "# writeup" in normalized or "## findings" in normalized
+
+
+def _reconstruct_tool_events(messages: list[AgentMessage]) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    by_id: dict[str, dict[str, Any]] = {}
+
+    for message in messages:
+        if message.role == "assistant":
+            for tool_call in message.tool_calls or []:
+                event_id = str(tool_call.get("id") or f"tool-{len(events) + 1}")
+                event = {
+                    "id": event_id,
+                    "name": tool_call.get("name") or "tool",
+                    "status": "running",
+                    "input": json.dumps(tool_call.get("args", {}), ensure_ascii=True, default=str),
+                }
+                by_id[event_id] = event
+                events.append(event)
+        elif message.role == "tool":
+            event_id = message.tool_call_id
+            event = by_id.get(event_id) if event_id else None
+            if event is None:
+                event_id = event_id or f"tool-{len(events) + 1}"
+                event = {
+                    "id": event_id,
+                    "name": message.name or "tool",
+                    "status": "running",
+                }
+                by_id[event_id] = event
+                events.append(event)
+            event["status"] = "done"
+            event["output"] = message.content
+
+    return events
 
 
 class CustomAgent:
@@ -484,30 +663,30 @@ class CustomAgent:
         self._rag_loaded = False
         self._execution_graph = self._build_execution_graph()
 
-    async def stream(
+    async def start(
         self,
+        queue: asyncio.Queue[AgentStreamEvent | None],
         *,
         on_task_started: Callable[[asyncio.Task], None] | None = None,
         on_task_done: Callable[[], None] | None = None,
-    ) -> AsyncGenerator[str, None]:
+    ) -> asyncio.Task:
         await self._load_rag_context()
 
-        queue: asyncio.Queue[str | None] = asyncio.Queue()
         loop = asyncio.get_running_loop()
         callback = _StreamCallbackHandler(queue, loop)
 
         await queue.put(
-            _format_sse(
+            _stream_event(
                 "session",
                 {"id": self.session_id, "title": self.session_title},
             )
         )
 
         if self.rag_sources:
-            await queue.put(_format_sse("rag_search", {"sources": self.rag_sources}))
+            await queue.put(_stream_event("rag_search", {"sources": self.rag_sources}))
 
         await queue.put(
-            _format_sse(
+            _stream_event(
                 "graph_init",
                 {
                     "nodes": _GRAPH_NODES,
@@ -519,22 +698,11 @@ class CustomAgent:
         task = asyncio.create_task(self._run_agent(queue, callback, on_task_done))
         if on_task_started:
             on_task_started(task)
-
-        try:
-            while True:
-                message = await queue.get()
-                if message is None:
-                    break
-                yield message
-        finally:
-            logger.info(
-                "Client disconnected for session %s. Agent task continues in background.",
-                self.session_id,
-            )
+        return task
 
     async def _run_agent(
         self,
-        queue: asyncio.Queue[str | None],
+        queue: asyncio.Queue[AgentStreamEvent | None],
         callback: _StreamCallbackHandler,
         on_task_done: Callable[[], None] | None,
     ) -> None:
@@ -547,6 +715,10 @@ class CustomAgent:
                     agent_done=asyncio.Event(),
                     exit_stack=exit_stack,
                 )
+                # MCP sessions use anyio cancel scopes; enter and exit them in this
+                # runner task so LangGraph node scheduling cannot split the scope.
+                run_context.mcp_tools = await self._load_mcp_tools(exit_stack)
+                run_context.mcp_tools_loaded = True
                 await self._execution_graph.ainvoke({"run": run_context})
 
         except Exception as exc:
@@ -556,7 +728,7 @@ class CustomAgent:
             )
             await self._write_error_message(exc, assistant_msg_id)
             await queue.put(
-                _format_sse(
+                _stream_event(
                     "error",
                     {"message": str(exc), "session_id": self.session_id},
                 )
@@ -614,6 +786,7 @@ class CustomAgent:
                     run.assistant_msg_id,
                     run.callback,
                     run.agent_done,
+                    lambda: self._run_metadata(run),
                 )
             )
         except Exception:
@@ -632,7 +805,9 @@ class CustomAgent:
             raise RuntimeError("Agent history persistence was not initialized")
 
         try:
-            run.mcp_tools = await self._load_mcp_tools(run.exit_stack)
+            if not run.mcp_tools_loaded:
+                run.mcp_tools = await self._load_mcp_tools(run.exit_stack)
+                run.mcp_tools_loaded = True
             run.history_messages = await self._load_history(
                 user_msg_id=run.user_msg_id,
                 assistant_msg_id=run.assistant_msg_id,
@@ -703,6 +878,7 @@ class CustomAgent:
                 assistant_msg_id=run.assistant_msg_id,
                 callback_usage=run.callback.usage,
                 callback_text=run.callback.token_text,
+                run_metadata=self._run_metadata(run, persist_output_status="done"),
             )
             if run.writeup_text:
                 run.assistant_text = run.writeup_text
@@ -711,7 +887,7 @@ class CustomAgent:
 
             await self._emit_graph_node(run, "persist_output", "done")
             await run.queue.put(
-                _format_sse(
+                _stream_event(
                     "done",
                     {"text": run.assistant_text, "session_id": self.session_id},
                 )
@@ -727,6 +903,9 @@ class CustomAgent:
         node_id: str,
         status: str,
     ) -> None:
+        self._set_graph_node_status(run, node_id, status)
+        if run.assistant_msg_id is not None:
+            await self._persist_trace_metadata(run)
         await run.queue.put(self._graph_node_event(node_id, status))
 
     def _enqueue_graph_node(
@@ -735,16 +914,63 @@ class CustomAgent:
         node_id: str,
         status: str,
     ) -> None:
+        self._set_graph_node_status(run, node_id, status)
         run.queue.put_nowait(self._graph_node_event(node_id, status))
 
-    def _graph_node_event(self, node_id: str, status: str) -> str:
-        return _format_sse(
+    def _graph_node_event(self, node_id: str, status: str) -> AgentStreamEvent:
+        return _stream_event(
             "graph_node",
             {
                 "id": node_id,
                 "status": status,
             },
         )
+
+    def _set_graph_node_status(
+        self,
+        run: _AgentRunContext,
+        node_id: str,
+        status: str,
+    ) -> None:
+        for node in run.graph_nodes:
+            if node["id"] == node_id:
+                node["status"] = status
+                return
+        run.graph_nodes.append(
+            {
+                "id": node_id,
+                "label": node_id,
+                "status": status,
+            }
+        )
+
+    def _run_metadata(
+        self,
+        run: _AgentRunContext,
+        *,
+        persist_output_status: str | None = None,
+    ) -> dict[str, Any]:
+        graph_nodes = [dict(node) for node in run.graph_nodes]
+        if persist_output_status is not None:
+            for node in graph_nodes:
+                if node["id"] == "persist_output":
+                    node["status"] = persist_output_status
+                    break
+        return {
+            "graph_nodes": graph_nodes,
+            "graph_edges": _GRAPH_EDGES,
+            "tool_events": run.callback.tool_events,
+            "mcp_events": run.callback.mcp_events,
+        }
+
+    async def _persist_trace_metadata(self, run: _AgentRunContext) -> None:
+        if run.assistant_msg_id is None:
+            return
+        async with AsyncSessionLocal() as db_session:
+            msg = await db_session.get(AgentMessage, run.assistant_msg_id)
+            if msg:
+                msg.extra_metadata = self._run_metadata(run)
+                await db_session.commit()
 
     def _should_generate_writeup(self) -> bool:
         user_input = self.input_text.lower()
@@ -894,22 +1120,29 @@ class CustomAgent:
         assistant_msg_id: int,
         callback: _StreamCallbackHandler,
         agent_done: asyncio.Event,
+        metadata_provider: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         last_saved = ""
+        last_metadata = ""
         while not agent_done.is_set():
             try:
                 await asyncio.wait_for(agent_done.wait(), timeout=2)
                 break
             except asyncio.TimeoutError:
                 current = callback.token_text
-                if current == last_saved:
+                metadata = metadata_provider() if metadata_provider else None
+                metadata_key = json.dumps(metadata, sort_keys=True, default=str)
+                if current == last_saved and metadata_key == last_metadata:
                     continue
                 async with AsyncSessionLocal() as db_session:
                     msg = await db_session.get(AgentMessage, assistant_msg_id)
                     if msg:
                         msg.content = current
+                        if metadata is not None:
+                            msg.extra_metadata = metadata
                         await db_session.commit()
                         last_saved = current
+                        last_metadata = metadata_key
             except Exception as exc:
                 logger.error("Error in periodic assistant update: %s", exc)
 
@@ -1168,6 +1401,7 @@ class CustomAgent:
         assistant_msg_id: int,
         callback_usage: Any,
         callback_text: str,
+        run_metadata: dict[str, Any] | None = None,
     ) -> str:
         assistant_text = ""
         message_usages = {
@@ -1182,6 +1416,8 @@ class CustomAgent:
         )
         residual_applied = False
         placeholder_updated = False
+        trace_message: AgentMessage | None = None
+        fallback_trace_message: AgentMessage | None = None
 
         async with AsyncSessionLocal() as db_session:
             for index, msg in enumerate(new_messages):
@@ -1207,6 +1443,11 @@ class CustomAgent:
                             msg_to_update.content = content
                             msg_to_update.tool_calls = msg.tool_calls
                             msg_to_update.model = self.config.model
+                            if run_metadata is not None:
+                                if content and not msg.tool_calls:
+                                    trace_message = msg_to_update
+                                else:
+                                    fallback_trace_message = msg_to_update
                             _apply_token_usage(msg_to_update, usage)
                             placeholder_updated = True
                             continue
@@ -1229,17 +1470,37 @@ class CustomAgent:
 
                 if isinstance(msg, AIMessage):
                     _apply_token_usage(db_msg, usage)
+                    if run_metadata is not None:
+                        if content and not msg.tool_calls:
+                            trace_message = db_msg
+                        elif fallback_trace_message is None:
+                            fallback_trace_message = db_msg
 
                 db_session.add(db_msg)
 
             if not placeholder_updated and (
-                callback_text or _has_token_usage(normalized_callback_usage)
+                callback_text
+                or _has_token_usage(normalized_callback_usage)
+                or run_metadata
             ):
                 msg_to_update = await db_session.get(AgentMessage, assistant_msg_id)
                 if msg_to_update:
                     msg_to_update.content = callback_text
                     msg_to_update.model = self.config.model
+                    if run_metadata is not None:
+                        trace_message = msg_to_update
                     _apply_token_usage(msg_to_update, normalized_callback_usage)
+
+            if run_metadata is not None:
+                target = trace_message or fallback_trace_message
+                if target is not None:
+                    target.extra_metadata = run_metadata
+                if (
+                    fallback_trace_message is not None
+                    and trace_message is not None
+                    and fallback_trace_message is not trace_message
+                ):
+                    fallback_trace_message.extra_metadata = None
 
             await db_session.commit()
 

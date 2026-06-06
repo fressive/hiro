@@ -14,7 +14,7 @@ export type Tool = {
 export type EventRecord = {
   id: string
   name: string
-  status: 'running' | 'done'
+  status: 'running' | 'done' | 'error'
   input?: string
   output?: string
 }
@@ -74,6 +74,10 @@ export type AgentMessage = {
   tool_calls?: any[]
   extra_metadata?: {
     rag_sources?: string[]
+    graph_nodes?: GraphNodeRecord[]
+    graph_edges?: GraphEdgeRecord[]
+    tool_events?: EventRecord[]
+    mcp_events?: EventRecord[]
   }
   input_tokens?: number
   cached_input_tokens?: number

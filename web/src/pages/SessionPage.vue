@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Play, Square, Loader2, Trash2, ChevronLeft, BarChart3, MessageSquare, Files } from '@lucide/vue'
 
 import { SidebarProvider, SidebarInset, SidebarTrigger } from '@/components/ui/sidebar'
@@ -7,7 +7,7 @@ import AppSidebar from '@/components/AppSidebar.vue'
 import { Separator } from '@/components/ui/separator'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
-import { apiFetch } from '@/lib/api'
+import { apiFetch, getApiBaseUrl } from '@/lib/api'
 
 import type { LLMConfig, Tool, EventRecord, AgentSession, MCPServer, AgentMessage, GraphNodeRecord, GraphNodeStatus } from '@/types/agent'
 import MessageItem from '@/components/agent/MessageItem.vue'
@@ -30,7 +30,7 @@ const output = ref<any[]>([])
 const isRunning = ref(false)
 const isDeepAgent = ref(true)
 const streamError = ref('')
-const streamController = ref<AbortController | null>(null)
+const sessionSocket = ref<WebSocket | null>(null)
 const toolEvents = ref<EventRecord[]>([])
 const mcpEvents = ref<EventRecord[]>([])
 const graphNodes = ref<GraphNodeRecord[]>([])
@@ -45,6 +45,10 @@ const enable1mContext = ref(false)
 const enableRag = ref(false)
 const responseScroll = ref<HTMLDivElement | null>(null)
 const expandedMessages = ref<Record<number, boolean>>({})
+const selectedSessionStorageKey = 'HIRO_SELECTED_AGENT_SESSION_ID'
+let socketSessionId: number | null = null
+let socketConnectPromise: Promise<void> | null = null
+let manualSocketClose = false
 
 const innerTab = ref<'chat' | 'stats' | 'files'>('chat')
 
@@ -116,19 +120,43 @@ const toggleMessage = (id: number) => {
 }
 
 const canRun = computed(() => {
-  return Boolean(prompt.value.trim()) && Boolean(selectedConfigId.value) && !isRunning.value
+  return Boolean(selectedSessionId.value) && Boolean(prompt.value.trim()) && Boolean(selectedConfigId.value) && !isRunning.value
 })
 
 const isAssistantPlaceholder = (message: AgentMessage) => {
+  const metadata = message.extra_metadata
+  const hasTraceMetadata = Boolean(
+    metadata?.graph_nodes?.length
+    || metadata?.tool_events?.length
+    || metadata?.mcp_events?.length
+  )
   return (
     message.role === 'assistant'
     && !message.content.trim()
     && (!message.tool_calls || message.tool_calls.length === 0)
+    && !hasTraceMetadata
   )
 }
 
+const hasLiveResponseActivity = computed(() => (
+  isRunning.value
+  || output.value.length > 0
+  || graphNodes.value.length > 0
+  || toolEvents.value.length > 0
+  || mcpEvents.value.length > 0
+))
+
+const isActiveAssistantDraft = (message: AgentMessage) => {
+  if (message.role !== 'assistant' || !hasLiveResponseActivity.value) return false
+
+  const graph = message.extra_metadata?.graph_nodes || []
+  return graph.some((node) => node.status === 'pending' || node.status === 'running')
+}
+
 const displayMessages = computed(() => {
-  const items = messages.value.filter((message) => !isAssistantPlaceholder(message))
+  const items = messages.value.filter((message) => (
+    !isAssistantPlaceholder(message) && !isActiveAssistantDraft(message)
+  ))
   const draft = prompt.value.trim()
   if (!draft) return items
 
@@ -174,6 +202,7 @@ const fetchRunningStatus = async (sessionId: number) => {
     const response = await apiFetch(`/api/v1/agent/sessions/${sessionId}/status`)
     if (response.ok) {
       const { is_running } = await response.json()
+      if (selectedSessionId.value !== sessionId) return
       isRunning.value = is_running
     }
   } catch (err) {
@@ -181,13 +210,136 @@ const fetchRunningStatus = async (sessionId: number) => {
   }
 }
 
+const buildWebSocketUrl = (path: string) => {
+  const baseUrl = getApiBaseUrl() || window.location.origin
+  const url = new URL(path, baseUrl)
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+  return url.toString()
+}
+
+const handleWebSocketMessage = (raw: string) => {
+  let payload: any = null
+  try {
+    payload = JSON.parse(raw)
+  } catch {
+    return
+  }
+
+  const event = payload?.event || payload?.type
+  if (!event) return
+  applyEvent(event, payload.data || {})
+}
+
+const closeSessionSocket = () => {
+  manualSocketClose = true
+  socketConnectPromise = null
+  if (sessionSocket.value && sessionSocket.value.readyState <= WebSocket.OPEN) {
+    sessionSocket.value.close()
+  }
+  sessionSocket.value = null
+  socketSessionId = null
+}
+
+const connectSessionSocket = (sessionId: number): Promise<void> => {
+  const current = sessionSocket.value
+  if (socketSessionId === sessionId && current?.readyState === WebSocket.OPEN) {
+    return Promise.resolve()
+  }
+  if (
+    socketSessionId === sessionId
+    && current?.readyState === WebSocket.CONNECTING
+    && socketConnectPromise
+  ) {
+    return socketConnectPromise
+  }
+
+  closeSessionSocket()
+  manualSocketClose = false
+  socketSessionId = sessionId
+
+  const socket = new WebSocket(buildWebSocketUrl(`/api/v1/agent/sessions/${sessionId}/ws`))
+  sessionSocket.value = socket
+
+  const connectPromise = new Promise<void>((resolve, reject) => {
+    let settled = false
+
+    socket.onopen = () => {
+      if (sessionSocket.value !== socket) return
+      settled = true
+      socketConnectPromise = null
+      resolve()
+    }
+
+    socket.onmessage = (event) => {
+      if (typeof event.data === 'string') {
+        handleWebSocketMessage(event.data)
+      }
+    }
+
+    socket.onerror = () => {
+      if (!settled) {
+        settled = true
+        socketConnectPromise = null
+        reject(new Error('WebSocket connection failed.'))
+      }
+    }
+
+    socket.onclose = () => {
+      if (sessionSocket.value === socket) {
+        sessionSocket.value = null
+      }
+      if (socketSessionId === sessionId) {
+        socketSessionId = null
+      }
+      if (!settled) {
+        settled = true
+        socketConnectPromise = null
+        reject(new Error('WebSocket connection closed.'))
+      }
+      if (
+        !manualSocketClose
+        && !sessionSocket.value
+        && selectedSessionId.value === sessionId
+        && isRunning.value
+      ) {
+        window.setTimeout(() => {
+          if (selectedSessionId.value === sessionId && isRunning.value) {
+            void connectSessionSocket(sessionId).catch((error) => {
+              streamError.value = error?.message || 'WebSocket reconnect failed.'
+            })
+          }
+        }, 1000)
+      }
+    }
+  })
+
+  socketConnectPromise = connectPromise
+  return connectPromise
+}
+
+const sendSessionCommand = async (sessionId: number, message: Record<string, any>) => {
+  await connectSessionSocket(sessionId)
+  const socket = sessionSocket.value
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    throw new Error('Session WebSocket is not connected.')
+  }
+  socket.send(JSON.stringify(message))
+}
+
 // Flag to prevent auto-save during session loading
 let isInitialLoad = false
 
 const onSessionChange = (id: number | null) => {
+  const previousSessionId = selectedSessionId.value
+  if (previousSessionId !== id) {
+    closeSessionSocket()
+  }
+
   selectedSessionId.value = id
   innerTab.value = 'chat'
+  isRunning.value = false
   if (id) {
+    localStorage.setItem(selectedSessionStorageKey, String(id))
     const session = sessions.value.find(s => s.id === id)
     if (session) {
       isInitialLoad = true
@@ -204,10 +356,14 @@ const onSessionChange = (id: number | null) => {
       // Reset initial load flag after a short delay to let watchers settle
       setTimeout(() => { isInitialLoad = false }, 100)
     }
+    clearOutput()
     fetchMessages(id)
     fetchRunningStatus(id)
-    clearOutput()
+    void connectSessionSocket(id).catch((error) => {
+      streamError.value = error?.message || 'WebSocket connection failed.'
+    })
   } else {
+    localStorage.removeItem(selectedSessionStorageKey)
     messages.value = []
     clearOutput()
   }
@@ -327,7 +483,8 @@ const debouncedSave = () => {
 }
 
 const startRun = async () => {
-  if (!canRun.value) return
+  if (!canRun.value || !selectedSessionId.value) return
+  const sessionId = selectedSessionId.value
   const currentPrompt = prompt.value.trim()
   isRunning.value = true
   clearOutput()
@@ -341,20 +498,13 @@ const startRun = async () => {
     created_at: new Date().toISOString(),
   })
 
-  const controller = new AbortController()
-  streamController.value = controller
-
   try {
-    const response = await apiFetch('/api/v1/agent/run', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'text/event-stream',
-      },
-      body: JSON.stringify({
+    await sendSessionCommand(sessionId, {
+      type: 'run',
+      payload: {
         config_id: selectedConfigId.value,
         input: currentPrompt,
-        session_id: selectedSessionId.value,
+        session_id: sessionId,
         system_prompt: systemPrompt.value,
         temperature: temperature.value,
         max_tokens: maxTokens.value,
@@ -363,43 +513,11 @@ const startRun = async () => {
         enable_rag: enableRag.value,
         tools: selectedTools.value,
         mcp_servers: selectedMcpServers.value,
-      }),
-      signal: controller.signal,
+      },
     })
-
-    if (!response.ok) {
-      const data = await response.json().catch(() => null)
-      throw new Error(data?.detail || 'Failed to run agent')
-    }
-
-    if (!response.body) {
-      throw new Error('No response stream available')
-    }
-
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-
-    while (true) {
-      const { value, done } = await reader.read()
-      if (done) break
-      if (value) {
-        buffer += decoder.decode(value, { stream: true })
-        buffer = handleSseBuffer(buffer)
-      }
-    }
-    buffer += decoder.decode()
-    handleSseBuffer(buffer)
   } catch (error: any) {
-    if (error?.name === 'AbortError') {
-      streamError.value = 'Request canceled.'
-    } else {
-      streamError.value = error?.message || 'Failed to run agent.'
-    }
-  } finally {
+    streamError.value = error?.message || 'Failed to run agent.'
     isRunning.value = false
-    streamController.value = null
-    // Refresh messages to show persisted tool calls
     if (selectedSessionId.value) {
       fetchMessages(selectedSessionId.value)
     }
@@ -407,16 +525,20 @@ const startRun = async () => {
 }
 
 const stopRun = async () => {
-  streamController.value?.abort()
-  if (selectedSessionId.value) {
-    try {
-      await apiFetch(`/api/v1/agent/sessions/${selectedSessionId.value}/stop`, {
-        method: 'POST'
+  const sessionId = selectedSessionId.value
+  if (!sessionId) return
+
+  try {
+    if (sessionSocket.value?.readyState === WebSocket.OPEN) {
+      sessionSocket.value.send(JSON.stringify({ type: 'stop' }))
+    } else {
+      await apiFetch(`/api/v1/agent/sessions/${sessionId}/stop`, {
+        method: 'POST',
       })
-      isRunning.value = false
-    } catch (e) {
-      console.error('Failed to stop agent', e)
     }
+    isRunning.value = false
+  } catch (e) {
+    console.error('Failed to stop agent', e)
   }
 }
 
@@ -427,37 +549,6 @@ const clearOutput = () => {
   mcpEvents.value = []
   graphNodes.value = []
   ragSources.value = []
-}
-
-const handleSseBuffer = (buffer: string) => {
-  const chunks = buffer.split('\n\n')
-  const remainder = chunks.pop() || ''
-
-  for (const chunk of chunks) {
-    const lines = chunk.split('\n').filter(Boolean)
-    let event = 'message'
-    const dataLines: string[] = []
-    for (const line of lines) {
-      if (line.startsWith('event:')) {
-        event = line.slice(6).trim()
-      } else if (line.startsWith('data:')) {
-        dataLines.push(line.slice(5).trim())
-      }
-    }
-
-    if (!dataLines.length) continue
-    const dataText = dataLines.join('\n')
-    let payload: any = null
-    try {
-      payload = JSON.parse(dataText)
-    } catch {
-      payload = { text: dataText }
-    }
-
-    applyEvent(event, payload)
-  }
-
-  return remainder
 }
 
 const upsertEvent = (target: EventRecord[], incoming: EventRecord) => {
@@ -489,6 +580,15 @@ const upsertGraphNode = (incoming: Partial<GraphNodeRecord> & { id: string, stat
 }
 
 const applyEvent = (event: string, payload: any) => {
+  if (event === 'status') {
+    const wasRunning = isRunning.value
+    isRunning.value = Boolean(payload.is_running)
+    if (wasRunning && !isRunning.value && selectedSessionId.value) {
+      fetchMessages(selectedSessionId.value)
+    }
+    return
+  }
+
   if (event === 'token') {
     const text = payload.text
     if (text === undefined) return
@@ -548,6 +648,7 @@ const applyEvent = (event: string, payload: any) => {
   if (event === 'session') {
     if (payload.id) {
       selectedSessionId.value = payload.id
+      localStorage.setItem(selectedSessionStorageKey, String(payload.id))
       fetchSessions()
       fetchMessages(payload.id)
     }
@@ -557,6 +658,9 @@ const applyEvent = (event: string, payload: any) => {
   if (event === 'error') {
     const message = payload.message || 'Agent failed.'
     streamError.value = message
+    if (payload.is_running === false) {
+      isRunning.value = false
+    }
     if (payload.session_id) {
       fetchMessages(payload.session_id)
     }
@@ -565,6 +669,7 @@ const applyEvent = (event: string, payload: any) => {
   }
 
   if (event === 'done') {
+    isRunning.value = false
     if (payload.text) {
       output.value = [] // Clear streaming output as it's now in history
     }
@@ -595,6 +700,16 @@ const applyEvent = (event: string, payload: any) => {
     return
   }
 
+  if (event === 'tool_error') {
+    upsertEvent(toolEvents.value, {
+      id: payload.id || crypto.randomUUID(),
+      name: payload.name || 'tool',
+      status: 'error',
+      output: payload.output,
+    })
+    return
+  }
+
   if (event === 'mcp_start') {
     upsertEvent(mcpEvents.value, {
       id: payload.id || crypto.randomUUID(),
@@ -610,6 +725,16 @@ const applyEvent = (event: string, payload: any) => {
       id: payload.id || crypto.randomUUID(),
       name: payload.name || 'mcp',
       status: 'done',
+      output: payload.output,
+    })
+    return
+  }
+
+  if (event === 'mcp_error') {
+    upsertEvent(mcpEvents.value, {
+      id: payload.id || crypto.randomUUID(),
+      name: payload.name || 'mcp',
+      status: 'error',
       output: payload.output,
     })
   }
@@ -642,6 +767,15 @@ onMounted(async () => {
   await fetchTools()
   await fetchMcpServers()
   await fetchSessions()
+
+  const savedSessionId = Number(localStorage.getItem(selectedSessionStorageKey))
+  if (savedSessionId && sessions.value.some((session) => session.id === savedSessionId)) {
+    onSessionChange(savedSessionId)
+  }
+})
+
+onBeforeUnmount(() => {
+  closeSessionSocket()
 })
 
 watch(

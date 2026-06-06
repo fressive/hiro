@@ -154,7 +154,8 @@ const graphStatusLabel = (status: GraphNodeStatus) => {
             <ChevronDown v-if="expandedToolEvents[event.id]" class="h-4 w-4 opacity-50" />
             <ChevronRight v-else class="h-4 w-4 opacity-50" />
             <Loader2 v-if="event.status === 'running'" class="h-3 w-3 animate-spin" />
-            <CheckCircle2 v-else class="h-3 w-3 text-emerald-500" />
+            <CheckCircle2 v-else-if="event.status === 'done'" class="h-3 w-3 text-emerald-500" />
+            <AlertCircle v-else class="h-3 w-3 text-destructive" />
             {{ event.name }}
           </span>
           <span class="text-[10px] opacity-50 uppercase">{{ event.status }}</span>
@@ -164,8 +165,10 @@ const graphStatusLabel = (status: GraphNodeStatus) => {
             <p class="text-[9px] font-bold opacity-50 mb-1">INPUT</p>
             <pre class="whitespace-pre-wrap font-mono">{{ event.input }}</pre>
           </div>
-          <div v-if="event.output" class="bg-emerald-50/30 p-2 rounded overflow-x-auto">
-            <p class="text-[9px] font-bold text-emerald-600/50 mb-1">OUTPUT</p>
+          <div v-if="event.output" :class="['p-2 rounded overflow-x-auto', event.status === 'error' ? 'bg-destructive/10' : 'bg-emerald-50/30']">
+            <p :class="['text-[9px] font-bold mb-1', event.status === 'error' ? 'text-destructive/70' : 'text-emerald-600/50']">
+              {{ event.status === 'error' ? 'ERROR' : 'OUTPUT' }}
+            </p>
             <pre class="whitespace-pre-wrap font-mono">{{ event.output }}</pre>
           </div>
         </div>
@@ -177,7 +180,8 @@ const graphStatusLabel = (status: GraphNodeStatus) => {
             <ChevronDown v-if="expandedToolEvents[event.id]" class="h-4 w-4 opacity-50" />
             <ChevronRight v-else class="h-4 w-4 opacity-50" />
             <Loader2 v-if="event.status === 'running'" class="h-3 w-3 animate-spin" />
-            <CheckCircle2 v-else class="h-3 w-3 text-emerald-500" />
+            <CheckCircle2 v-else-if="event.status === 'done'" class="h-3 w-3 text-emerald-500" />
+            <AlertCircle v-else class="h-3 w-3 text-destructive" />
             MCP: {{ event.name }}
           </span>
           <span class="text-[10px] opacity-50 uppercase">{{ event.status }}</span>
@@ -187,8 +191,10 @@ const graphStatusLabel = (status: GraphNodeStatus) => {
             <p class="text-[9px] font-bold opacity-50 mb-1">INPUT</p>
             <pre class="whitespace-pre-wrap font-mono">{{ event.input }}</pre>
           </div>
-          <div v-if="event.output" class="bg-emerald-50/30 p-2 rounded overflow-x-auto">
-            <p class="text-[9px] font-bold text-emerald-600/50 mb-1">OUTPUT</p>
+          <div v-if="event.output" :class="['p-2 rounded overflow-x-auto', event.status === 'error' ? 'bg-destructive/10' : 'bg-emerald-50/30']">
+            <p :class="['text-[9px] font-bold mb-1', event.status === 'error' ? 'text-destructive/70' : 'text-emerald-600/50']">
+              {{ event.status === 'error' ? 'ERROR' : 'OUTPUT' }}
+            </p>
             <pre class="whitespace-pre-wrap font-mono">{{ event.output }}</pre>
           </div>
         </div>

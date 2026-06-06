@@ -1,10 +1,10 @@
 import asyncio
-import json
 from contextlib import AsyncExitStack
 
 from langchain_core.messages import AIMessage, HumanMessage
 
 from server.agent.custom_agent import (
+    AgentStreamEvent,
     CustomAgent,
     _AgentRunContext,
     _StreamCallbackHandler,
@@ -13,23 +13,16 @@ from server.models.models import LLMConfig
 from server.models.schemas import AgentRunRequest
 
 
-def _parse_sse_event(raw_event: str):
-    event_name = "message"
-    data_lines: list[str] = []
-    for line in raw_event.strip().split("\n"):
-        if line.startswith("event:"):
-            event_name = line.removeprefix("event:").strip()
-        elif line.startswith("data:"):
-            data_lines.append(line.removeprefix("data:").strip())
-    return event_name, json.loads("\n".join(data_lines))
+def _parse_stream_event(raw_event: AgentStreamEvent):
+    return raw_event.event, raw_event.data
 
 
-async def _collect_until_done(queue: asyncio.Queue[str | None]):
+async def _collect_until_done(queue: asyncio.Queue[AgentStreamEvent | None]):
     events = []
     while True:
         raw_event = await queue.get()
         assert raw_event is not None
-        event = _parse_sse_event(raw_event)
+        event = _parse_stream_event(raw_event)
         events.append(event)
         if event[0] == "done":
             return events
@@ -98,7 +91,7 @@ def test_custom_agent_execution_graph_persists_done_event(monkeypatch):
         monkeypatch.setattr(agent, "_execute", execute)
         monkeypatch.setattr(agent, "_save_final_messages", save_final_messages)
 
-        queue: asyncio.Queue[str | None] = asyncio.Queue()
+        queue: asyncio.Queue[AgentStreamEvent | None] = asyncio.Queue()
         callback = _StreamCallbackHandler(queue, asyncio.get_running_loop())
         async with AsyncExitStack() as exit_stack:
             context = _AgentRunContext(
@@ -210,7 +203,7 @@ def test_custom_agent_execution_graph_routes_to_writeup_node(monkeypatch):
         monkeypatch.setattr(agent, "_save_writeup_artifact", save_writeup_artifact)
         monkeypatch.setattr(agent, "_save_final_messages", save_final_messages)
 
-        queue: asyncio.Queue[str | None] = asyncio.Queue()
+        queue: asyncio.Queue[AgentStreamEvent | None] = asyncio.Queue()
         callback = _StreamCallbackHandler(queue, asyncio.get_running_loop())
         async with AsyncExitStack() as exit_stack:
             context = _AgentRunContext(
