@@ -63,25 +63,37 @@ const graphNodeCaption = (node: GraphNodeRecord) => {
 
 <template>
   <!-- Standard Message -->
-  <div 
+  <div
     v-if="message.role !== 'tool'"
-    class="rounded-lg border p-3 text-sm shadow-sm"
-    :class="message.role === 'assistant' ? 'bg-background' : 'bg-muted/10'"
+    :class="['group flex w-full gap-3 text-sm', message.role === 'user' ? 'justify-end' : 'justify-start']"
   >
-    <div class="text-xs font-semibold text-muted-foreground mb-2 flex items-center justify-between">
-      <span>{{ message.role === 'user' ? 'User' : 'Assistant' }}</span>
-      <div class="flex items-center gap-2">
-        <span v-if="message.model" class="text-[9px] px-1 rounded bg-primary/10 text-primary border border-primary/20 font-medium">
-          {{ message.model }}
-        </span>
-        <span v-if="message.input_tokens || message.output_tokens" class="text-[9px] px-1 rounded bg-muted font-mono opacity-80">
-        <template v-if="message.input_tokens">in:{{ message.input_tokens }}</template>
-          <template v-if="message.input_tokens && message.output_tokens">/</template>
-          <template v-if="message.output_tokens">out:{{ message.output_tokens }}</template>
-        </span>
-        <span v-if="message.created_at" class="text-[10px] font-normal opacity-50">{{ new Date(message.created_at).toLocaleTimeString() }}</span>
-      </div>
+    <div
+      v-if="message.role === 'assistant'"
+      class="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border bg-background text-muted-foreground"
+    >
+      <Bot class="h-4 w-4" />
     </div>
+    <div :class="['min-w-0', message.role === 'user' ? 'max-w-[min(38rem,85%)]' : 'max-w-4xl flex-1']">
+      <div
+        :class="[
+          'mb-1 flex items-center gap-2 text-xs font-medium text-muted-foreground',
+          message.role === 'user' ? 'justify-end' : 'justify-between'
+        ]"
+      >
+        <span>{{ message.role === 'user' ? 'You' : 'Assistant' }}</span>
+        <div class="flex items-center gap-2">
+          <span v-if="message.model" class="text-[9px] px-1 rounded bg-primary/10 text-primary border border-primary/20 font-medium">
+            {{ message.model }}
+          </span>
+          <span v-if="message.input_tokens || message.output_tokens" class="text-[9px] px-1 rounded bg-muted font-mono opacity-80">
+          <template v-if="message.input_tokens">in:{{ message.input_tokens }}</template>
+            <template v-if="message.input_tokens && message.output_tokens">/</template>
+            <template v-if="message.output_tokens">out:{{ message.output_tokens }}</template>
+          </span>
+          <span v-if="message.created_at" class="text-[10px] font-normal opacity-50">{{ new Date(message.created_at).toLocaleTimeString() }}</span>
+        </div>
+      </div>
+      <div :class="[message.role === 'user' ? 'rounded-2xl rounded-tr-md bg-muted px-4 py-3' : '']">
 
     <div v-if="graphNodes.length > 0" class="mb-3 rounded-lg border bg-muted/20 p-3">
       <p class="text-xs font-semibold text-muted-foreground">Execution Graph</p>
@@ -186,14 +198,16 @@ const graphNodeCaption = (node: GraphNodeRecord) => {
         </span>
       </div>
     </div>
+      </div>
+    </div>
   </div>
 
   <!-- Tool Execution Result -->
-  <div 
+  <div
     v-else
-    class="rounded-lg border border-dashed p-3 text-sm bg-muted/20 overflow-hidden"
+    class="ml-10 overflow-hidden border-l border-dashed py-2 pl-3 text-xs text-muted-foreground"
   >
-    <p class="text-xs font-semibold text-muted-foreground mb-2 flex items-center justify-between">
+    <p class="mb-2 flex items-center justify-between font-semibold">
       <span class="flex items-center gap-1.5">
         <Wrench class="h-3 w-3" />
         Tool: {{ message.name || 'Result' }}
@@ -203,7 +217,7 @@ const graphNodeCaption = (node: GraphNodeRecord) => {
     
     <div class="relative group">
       <pre 
-        class="whitespace-pre-wrap text-foreground font-mono text-xs transition-all duration-300"
+        class="whitespace-pre-wrap font-mono text-xs text-foreground transition-all duration-300"
         :class="[!isExpanded && message.content.length > 500 ? 'max-h-[120px] overflow-hidden mask-fade' : '']"
       >{{ message.content }}</pre>
       

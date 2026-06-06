@@ -69,7 +69,11 @@ const graphNodeCaption = (node: GraphNodeRecord) => {
 </script>
 
 <template>
-  <div v-if="hasResponseActivity" class="rounded-lg border p-3 text-sm shadow-sm">
+  <div v-if="hasResponseActivity" class="flex w-full gap-3 text-sm">
+    <div class="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border bg-background text-muted-foreground">
+      <Bot class="h-4 w-4" />
+    </div>
+    <div class="min-w-0 max-w-4xl flex-1">
     <div v-if="graphNodes.length > 0" class="mb-3 rounded-lg border bg-muted/20 p-3">
       <div class="flex items-center justify-between gap-3">
         <p class="text-xs font-semibold text-muted-foreground">Execution Graph</p>
@@ -144,6 +148,7 @@ const graphNodeCaption = (node: GraphNodeRecord) => {
           {{ source }}
         </span>
       </div>
+    </div>
     </div>
   </div>
 

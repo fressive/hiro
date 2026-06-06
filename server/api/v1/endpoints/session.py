@@ -472,8 +472,12 @@ async def list_sessions(session: AsyncSession = Depends(get_session)):
 async def create_session(
     payload: AgentSessionCreate, session: AsyncSession = Depends(get_session)
 ):
+    title = payload.title.strip() if payload.title else "New Session"
+    if not title:
+        title = "New Session"
+
     created = AgentSession(
-        title=payload.title,
+        title=title,
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
     )
@@ -497,6 +501,11 @@ async def update_session(
         raise HTTPException(status_code=404, detail="Session not found")
 
     update_data = payload.model_dump(exclude_unset=True)
+    if "title" in update_data:
+        update_data["title"] = (update_data["title"] or "").strip()
+        if not update_data["title"]:
+            raise HTTPException(status_code=400, detail="Session title is required")
+
     for key, value in update_data.items():
         setattr(db_session, key, value)
         if key in ["tools", "mcp_servers"]:

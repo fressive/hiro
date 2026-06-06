@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Play, Square, Loader2, Trash2, ChevronLeft, BarChart3, MessageSquare, Files, SlidersHorizontal } from '@lucide/vue'
+import { Square, Loader2, Trash2, ChevronLeft, BarChart3, MessageSquare, Files, SlidersHorizontal, X, SendHorizontal, Pencil, Check } from '@lucide/vue'
 import {
   DialogClose,
   DialogContent,
@@ -60,6 +60,9 @@ const expandedMessages = ref<Record<number, boolean>>({})
 const isTemplateDialogOpen = ref(false)
 const templateName = ref('')
 const templateError = ref('')
+const isRenamingSelectedSession = ref(false)
+const selectedSessionTitleDraft = ref('')
+const selectedTitleInput = ref<HTMLInputElement | null>(null)
 const selectedSessionStorageKey = 'HIRO_SELECTED_AGENT_SESSION_ID'
 let socketSessionId: number | null = null
 let socketConnectPromise: Promise<void> | null = null
@@ -138,6 +141,13 @@ const toggleMessage = (id: number) => {
 const canRun = computed(() => {
   return Boolean(selectedSessionId.value) && Boolean(prompt.value.trim()) && Boolean(selectedConfigId.value) && !isRunning.value
 })
+
+const selectedSession = computed(() => {
+  if (!selectedSessionId.value) return null
+  return sessions.value.find((session) => session.id === selectedSessionId.value) || null
+})
+
+const selectedSessionTitle = computed(() => selectedSession.value?.title || 'Chat')
 
 const hasTraceMetadata = (message: AgentMessage) => {
   const metadata = message.extra_metadata
@@ -419,6 +429,7 @@ const onSessionChange = (id: number | null) => {
 
   selectedSessionId.value = id
   innerTab.value = 'chat'
+  cancelRenameSelectedSession()
   isRunning.value = false
   if (id) {
     localStorage.setItem(selectedSessionStorageKey, String(id))
@@ -463,6 +474,47 @@ const createSession = async () => {
   onSessionChange(created.id)
   // Save default config for the new session
   saveSessionConfig()
+}
+
+const renameSession = async (sessionId: number, title: string) => {
+  const nextTitle = title.trim()
+  if (!nextTitle) return false
+
+  const response = await apiFetch(`/api/v1/agent/sessions/${sessionId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title: nextTitle }),
+  })
+  if (!response.ok) return false
+
+  const updated: AgentSession = await response.json()
+  const index = sessions.value.findIndex((session) => session.id === sessionId)
+  if (index >= 0) {
+    sessions.value[index] = updated
+  }
+  return true
+}
+
+const startRenameSelectedSession = async () => {
+  if (!selectedSession.value) return
+  selectedSessionTitleDraft.value = selectedSession.value.title || 'Untitled Session'
+  isRenamingSelectedSession.value = true
+  await nextTick()
+  selectedTitleInput.value?.focus()
+  selectedTitleInput.value?.select()
+}
+
+const cancelRenameSelectedSession = () => {
+  isRenamingSelectedSession.value = false
+  selectedSessionTitleDraft.value = ''
+}
+
+const submitSelectedSessionRename = async () => {
+  if (!selectedSession.value) return
+  const saved = await renameSession(selectedSession.value.id, selectedSessionTitleDraft.value)
+  if (saved) {
+    cancelRenameSelectedSession()
+  }
 }
 
 const deleteSession = async (id?: number) => {
@@ -997,9 +1049,52 @@ watch(
           >
             <ChevronLeft class="h-4 w-4" />
           </Button>
-          <h1 class="truncate text-lg font-semibold">
-            {{ selectedSessionId ? (sessions.find(s => s.id === selectedSessionId)?.title || 'Chat') : 'Sessions' }}
-          </h1>
+          <form
+            v-if="selectedSessionId && isRenamingSelectedSession"
+            class="flex min-w-0 flex-1 items-center gap-1"
+            @submit.prevent="submitSelectedSessionRename"
+          >
+            <input
+              ref="selectedTitleInput"
+              v-model="selectedSessionTitleDraft"
+              class="h-9 min-w-0 flex-1 rounded-md border bg-background px-2 text-lg font-semibold outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              @keydown.esc.prevent="cancelRenameSelectedSession"
+            />
+            <Button
+              type="submit"
+              variant="ghost"
+              size="icon"
+              class="h-8 w-8"
+              :disabled="!selectedSessionTitleDraft.trim()"
+            >
+              <Check class="h-4 w-4" />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              class="h-8 w-8"
+              @click="cancelRenameSelectedSession"
+            >
+              <X class="h-4 w-4" />
+            </Button>
+          </form>
+          <div v-else class="flex min-w-0 flex-1 items-center gap-1">
+            <h1 class="truncate text-lg font-semibold">
+              {{ selectedSessionId ? selectedSessionTitle : 'Sessions' }}
+            </h1>
+            <Button
+              v-if="selectedSessionId"
+              type="button"
+              variant="ghost"
+              size="icon"
+              title="Rename session"
+              class="h-8 w-8 shrink-0 text-muted-foreground"
+              @click="startRenameSelectedSession"
+            >
+              <Pencil class="h-4 w-4" />
+            </Button>
+          </div>
         </div>
         <div v-if="selectedSessionId" class="flex shrink-0 items-center gap-2">
           <div class="flex items-center gap-1 rounded-lg bg-muted p-1">
@@ -1052,76 +1147,90 @@ watch(
             @select-session="onSessionChange"
             @create-session="createSession"
             @delete-session="deleteSession"
+            @rename-session="renameSession"
           />
         </div>
-        <div v-else :class="['grid h-full overflow-hidden', innerTab === 'chat' && showSettings ? 'gap-4 lg:grid-cols-[minmax(0,1fr)_20rem] xl:grid-cols-[minmax(0,1fr)_21rem]' : 'grid-cols-1 gap-4']">
+        <div v-else class="relative grid h-full grid-cols-1 gap-4 overflow-hidden">
             <div class="flex h-full min-h-0 flex-col gap-4 overflow-hidden">
               <template v-if="innerTab === 'chat'">
-                <Card class="flex-1 min-h-0 gap-3 overflow-hidden py-4">
-                  <CardContent class="flex-1 min-h-0 overflow-hidden px-4">
-                    <div ref="responseScroll" class="h-full overflow-auto pr-1">
-                      <div class="mb-3 space-y-3">
+                <div class="flex-1 min-h-0 overflow-hidden">
+                  <div ref="responseScroll" class="h-full overflow-auto px-1">
+                    <div class="mx-auto flex min-h-full max-w-4xl flex-col py-4">
+                      <div class="flex-1 space-y-6">
                         <div v-if="messages.length === 0" class="text-sm text-muted-foreground">
                           No messages yet. Start a run to build history.
                         </div>
                         <template v-for="message in displayMessages" :key="message.id">
-                          <MessageItem 
-                            :message="message" 
+                          <MessageItem
+                            :message="message"
                             :is-expanded="expandedMessages[message.id]"
                             @toggle-expand="toggleMessage(message.id)"
                           />
                         </template>
+
+                        <!-- Active Streaming Output -->
+                        <ActiveResponse
+                          :output="output"
+                          :is-running="isRunning"
+                          :stream-error="streamError"
+                          :rag-sources="ragSources"
+                          :tool-events="toolEvents"
+                          :mcp-events="mcpEvents"
+                          :graph-nodes="graphNodes"
+                        />
                       </div>
-
-                      <!-- Active Streaming Output -->
-                      <ActiveResponse
-                        :output="output"
-                        :is-running="isRunning"
-                        :stream-error="streamError"
-                        :rag-sources="ragSources"
-                        :tool-events="toolEvents"
-                        :mcp-events="mcpEvents"
-                        :graph-nodes="graphNodes"
-                      />
                     </div>
-                  </CardContent>
-                </Card>
+                  </div>
+                </div>
 
-                <div>
-                  <Card class="gap-3 py-4">
-                    <CardContent class="space-y-3 px-4">
-                      <textarea
-                        v-model="prompt"
-                        rows="2"
-                        placeholder="Your prompt here..."
-                        class="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                        :disabled="isRunning"
-                        @keydown.enter.ctrl.prevent="startRun"
-                      />
-                      <div class="flex flex-wrap gap-3">
-                        <Button type="button" class="flex-1" :disabled="!canRun" @click="startRun">
-                          <Loader2 v-if="isRunning" class="mr-2 h-4 w-4 animate-spin" />
-                          <Play v-else class="mr-2 h-4 w-4" />
-                          Run
-                        </Button>
-                        <Button type="button" variant="outline" :disabled="!isRunning" @click="stopRun">
-                          <Square class="mr-2 h-4 w-4" />
-                          Stop
+                <div class="shrink-0 border-t bg-background/95 px-1 pb-1 pt-3">
+                  <div class="mx-auto max-w-4xl rounded-2xl border bg-background shadow-sm transition-shadow focus-within:ring-1 focus-within:ring-ring">
+                    <textarea
+                      v-model="prompt"
+                      rows="1"
+                      placeholder="Message Hiro..."
+                      class="max-h-44 min-h-12 w-full resize-none bg-transparent px-4 py-3 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                      :disabled="isRunning"
+                      @keydown.enter.exact.prevent="startRun"
+                    />
+                    <div class="flex items-center justify-between gap-2 border-t px-3 py-2">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        title="Clear"
+                        class="h-8 w-8"
+                        :disabled="isRunning || (output.length === 0 && !streamError)"
+                        @click="clearOutput"
+                      >
+                        <Trash2 class="h-4 w-4" />
+                      </Button>
+                      <div class="flex items-center gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon"
+                          title="Stop"
+                          class="h-8 w-8"
+                          :disabled="!isRunning"
+                          @click="stopRun"
+                        >
+                          <Square class="h-4 w-4" />
                         </Button>
                         <Button
                           type="button"
-                          variant="ghost"
-                          class="ml-auto"
-                          :disabled="isRunning || (!output && !streamError)"
-                          @click="clearOutput"
+                          size="icon"
+                          title="Send"
+                          class="h-9 w-9 rounded-full"
+                          :disabled="!canRun"
+                          @click="startRun"
                         >
-                          <Trash2 class="mr-2 h-4 w-4" />
-                          Clear
+                          <Loader2 v-if="isRunning" class="h-4 w-4 animate-spin" />
+                          <SendHorizontal v-else class="h-4 w-4" />
                         </Button>
                       </div>
-
-                    </CardContent>
-                  </Card>
+                    </div>
+                  </div>
                 </div>
               </template>
 
@@ -1232,12 +1341,24 @@ watch(
               </div>
             </div>
 
-            <Card v-if="innerTab === 'chat' && showSettings" class="h-full min-h-0 gap-4 overflow-auto py-4">
-              <CardHeader class="px-4">
+            <Card
+              v-if="innerTab === 'chat' && showSettings"
+              class="absolute bottom-0 right-0 top-0 z-30 w-[min(24rem,calc(100vw-2rem))] min-h-0 gap-4 overflow-auto border shadow-2xl py-4 animate-in fade-in slide-in-from-right-2 duration-150"
+            >
+              <CardHeader class="grid-cols-[1fr_auto] px-4">
                 <div>
                   <CardTitle>Settings</CardTitle>
                   <CardDescription>Templates, model, and parameters.</CardDescription>
                 </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  class="h-8 w-8"
+                  @click="showSettings = false"
+                >
+                  <X class="h-4 w-4" />
+                </Button>
               </CardHeader>
               <AgentSettings
                 :canSaveTemplate="Boolean(selectedSessionId)"
