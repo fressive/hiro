@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Play, Square, Loader2, Trash2, ChevronLeft, BarChart3, MessageSquare, Files } from '@lucide/vue'
+import { Play, Square, Loader2, Trash2, ChevronLeft, BarChart3, MessageSquare, Files, SlidersHorizontal } from '@lucide/vue'
 import {
   DialogClose,
   DialogContent,
@@ -66,6 +66,7 @@ let socketConnectPromise: Promise<void> | null = null
 let manualSocketClose = false
 
 const innerTab = ref<'chat' | 'stats' | 'files'>('chat')
+const showSettings = ref(false)
 
 type SessionStats = {
   total_tokens: number
@@ -983,26 +984,68 @@ watch(
   <SidebarProvider>
     <AppSidebar />
     <SidebarInset class="flex h-screen flex-col overflow-hidden">
-      <header class="flex h-16 shrink-0 items-center gap-2 border-b px-4">
-        <div class="flex items-center gap-2 flex-1">
+      <header class="flex h-16 shrink-0 items-center gap-3 border-b px-4">
+        <div class="flex min-w-0 flex-1 items-center gap-2">
           <SidebarTrigger class="-ml-1" />
           <Separator orientation="vertical" class="mr-2 h-4" />
-          <Button 
-            v-if="selectedSessionId" 
-            variant="ghost" 
-            size="icon" 
+          <Button
+            v-if="selectedSessionId"
+            variant="ghost"
+            size="icon"
             @click="onSessionChange(null)"
             class="h-8 w-8"
           >
             <ChevronLeft class="h-4 w-4" />
           </Button>
-          <h1 class="text-lg font-semibold">
+          <h1 class="truncate text-lg font-semibold">
             {{ selectedSessionId ? (sessions.find(s => s.id === selectedSessionId)?.title || 'Chat') : 'Sessions' }}
           </h1>
         </div>
+        <div v-if="selectedSessionId" class="flex shrink-0 items-center gap-2">
+          <div class="flex items-center gap-1 rounded-lg bg-muted p-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              :class="['gap-2', innerTab === 'chat' && 'bg-background shadow-sm']"
+              @click="innerTab = 'chat'"
+            >
+              <MessageSquare class="h-4 w-4" />
+              <span class="hidden sm:inline">Chat</span>
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              :class="['gap-2', innerTab === 'stats' && 'bg-background shadow-sm']"
+              @click="innerTab = 'stats'"
+            >
+              <BarChart3 class="h-4 w-4" />
+              <span class="hidden sm:inline">Stats</span>
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              :class="['gap-2', innerTab === 'files' && 'bg-background shadow-sm']"
+              @click="innerTab = 'files'"
+            >
+              <Files class="h-4 w-4" />
+              <span class="hidden sm:inline">Files</span>
+            </Button>
+          </div>
+          <Button
+            v-if="innerTab === 'chat'"
+            type="button"
+            variant="outline"
+            size="sm"
+            class="shrink-0 gap-2"
+            @click="showSettings = !showSettings"
+          >
+            <SlidersHorizontal class="h-4 w-4" />
+            <span class="hidden md:inline">{{ showSettings ? 'Hide settings' : 'Show settings' }}</span>
+          </Button>
+        </div>
       </header>
 
-      <main class="flex-1 p-6 space-y-6 overflow-hidden flex flex-col">
+      <main class="flex-1 p-4 space-y-4 overflow-hidden flex flex-col lg:p-5">
         <div v-if="!selectedSessionId" class="flex-1 overflow-auto">
           <SessionList 
             :sessions="sessions" 
@@ -1011,47 +1054,13 @@ watch(
             @delete-session="deleteSession"
           />
         </div>
-        <div v-else :class="['grid gap-6 h-full overflow-hidden', innerTab === 'chat' ? 'lg:grid-cols-[minmax(0,1.85fr)_minmax(0,0.55fr)]' : 'grid-cols-1']">
-            <div class="flex h-full min-h-0 flex-col gap-6 overflow-hidden">
-              <!-- Inner Tab Switcher -->
-              <div class="flex items-center gap-1 p-1 bg-muted rounded-lg w-fit">
-                <Button 
-                  variant="ghost" 
-                  size="sm" 
-                  :class="['gap-2', innerTab === 'chat' && 'bg-background shadow-sm']"
-                  @click="innerTab = 'chat'"
-                >
-                  <MessageSquare class="h-4 w-4" />
-                  Chat
-                </Button>
-                <Button 
-                  variant="ghost" 
-                  size="sm" 
-                  :class="['gap-2', innerTab === 'stats' && 'bg-background shadow-sm']"
-                  @click="innerTab = 'stats'"
-                >
-                  <BarChart3 class="h-4 w-4" />
-                  Stats
-                </Button>
-                <Button 
-                  variant="ghost" 
-                  size="sm" 
-                  :class="['gap-2', innerTab === 'files' && 'bg-background shadow-sm']"
-                  @click="innerTab = 'files'"
-                >
-                  <Files class="h-4 w-4" />
-                  Files
-                </Button>
-              </div>
-
+        <div v-else :class="['grid h-full overflow-hidden', innerTab === 'chat' && showSettings ? 'gap-4 lg:grid-cols-[minmax(0,1fr)_20rem] xl:grid-cols-[minmax(0,1fr)_21rem]' : 'grid-cols-1 gap-4']">
+            <div class="flex h-full min-h-0 flex-col gap-4 overflow-hidden">
               <template v-if="innerTab === 'chat'">
-                <Card class="flex-1 min-h-0 overflow-hidden">
-                  <CardHeader>
-                    <CardTitle>Response</CardTitle>
-                  </CardHeader>
-                  <CardContent class="h-full min-h-0 overflow-hidden">
-                    <div ref="responseScroll" class="h-full overflow-auto">
-                      <div class="mb-4 space-y-3">
+                <Card class="flex-1 min-h-0 gap-3 overflow-hidden py-4">
+                  <CardContent class="flex-1 min-h-0 overflow-hidden px-4">
+                    <div ref="responseScroll" class="h-full overflow-auto pr-1">
+                      <div class="mb-3 space-y-3">
                         <div v-if="messages.length === 0" class="text-sm text-muted-foreground">
                           No messages yet. Start a run to build history.
                         </div>
@@ -1078,12 +1087,12 @@ watch(
                   </CardContent>
                 </Card>
 
-                <div class="-mt-2">
-                  <Card>
-                    <CardContent class="space-y-4">
+                <div>
+                  <Card class="gap-3 py-4">
+                    <CardContent class="space-y-3 px-4">
                       <textarea
                         v-model="prompt"
-                        rows="3"
+                        rows="2"
                         placeholder="Your prompt here..."
                         class="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                         :disabled="isRunning"
@@ -1223,8 +1232,8 @@ watch(
               </div>
             </div>
 
-            <Card v-if="innerTab === 'chat'" class="h-full min-h-0 overflow-auto">
-              <CardHeader>
+            <Card v-if="innerTab === 'chat' && showSettings" class="h-full min-h-0 gap-4 overflow-auto py-4">
+              <CardHeader class="px-4">
                 <div>
                   <CardTitle>Settings</CardTitle>
                   <CardDescription>Templates, model, and parameters.</CardDescription>
