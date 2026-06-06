@@ -243,6 +243,7 @@ class AgentMessageResponse(BaseModel):
     tool_calls: Optional[List[dict]] = None
     extra_metadata: Optional[dict] = None
     input_tokens: Optional[int] = None
+    cached_input_tokens: Optional[int] = None
     output_tokens: Optional[int] = None
     model: Optional[str] = None
     created_at: datetime

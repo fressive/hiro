@@ -60,6 +60,7 @@ export type AgentMessage = {
     rag_sources?: string[]
   }
   input_tokens?: number
+  cached_input_tokens?: number
   output_tokens?: number
   model?: string
   created_at: string

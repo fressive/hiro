@@ -806,6 +806,16 @@ async def run_agent(
                         for msg in all_messages[len(history_messages) + 1:]
                     ]
                     assistant_text = ""
+                    message_usages = {
+                        index: _message_token_usage(msg)
+                        for index, msg in enumerate(new_messages)
+                        if isinstance(msg, AIMessage)
+                    }
+                    callback_usage = _normalize_token_usage(callback.usage)
+                    residual_usage = _subtract_token_usage(
+                        callback_usage, _add_token_usage(*message_usages.values())
+                    )
+                    residual_applied = False
                     
                     async with AsyncSessionLocal() as db_session:
                         for i, msg in enumerate(new_messages):
@@ -815,34 +825,38 @@ async def run_agent(
                                 role = "assistant"
                                 if not assistant_text and not msg.tool_calls:
                                     assistant_text = content
+
+                                usage = message_usages.get(i, _empty_token_usage())
+                                if not residual_applied and _has_token_usage(residual_usage):
+                                    usage = _add_token_usage(usage, residual_usage)
+                                    residual_applied = True
                                 
                                 # Update the placeholder assistant message if it's the first one
-                                if i == 0 or (i == 1 and new_messages[0].role == "user"):
+                                if i == 0 or (i == 1 and isinstance(new_messages[0], HumanMessage)):
                                     msg_to_update = await db_session.get(AgentMessage, assistant_msg_id)
                                     if msg_to_update:
                                         msg_to_update.content = content
                                         msg_to_update.tool_calls = msg.tool_calls
-                                        # Capture usage
-                                        usage = getattr(msg, "usage_metadata", {})
-                                        msg_to_update.input_tokens = usage.get("input_tokens") or callback.usage["input_tokens"]
-                                        msg_to_update.output_tokens = usage.get("output_tokens") or callback.usage["output_tokens"]
-                                        msg_to_update.cached_input_tokens = usage.get("cache_read_input_tokens") or callback.usage["cached_input_tokens"]
+                                        msg_to_update.model = config.model
+                                        _apply_token_usage(msg_to_update, usage)
                                         continue
 
                             elif isinstance(msg, ToolMessage): role = "tool"
                             elif isinstance(msg, HumanMessage): role = "user"
 
-                            db_msg = AgentMessage(session_id=active_session_id, role=role, content=content, name=getattr(msg, "name", None), tool_call_id=getattr(msg, "tool_call_id", None), tool_calls=getattr(msg, "tool_calls", None), created_at=datetime.now(timezone.utc))
+                            db_msg = AgentMessage(
+                                session_id=active_session_id,
+                                role=role,
+                                content=content,
+                                name=getattr(msg, "name", None),
+                                tool_call_id=getattr(msg, "tool_call_id", None),
+                                tool_calls=getattr(msg, "tool_calls", None),
+                                model=config.model if role == "assistant" else None,
+                                created_at=datetime.now(timezone.utc),
+                            )
                             
                             if isinstance(msg, AIMessage):
-                                usage = getattr(msg, "usage_metadata", {})
-                                if usage:
-                                    db_msg.input_tokens = usage.get("input_tokens")
-                                    db_msg.output_tokens = usage.get("output_tokens")
-                                    cached_tokens = usage.get("cache_read_input_tokens") or 0
-                                    if not cached_tokens and "input_token_details" in usage:
-                                        cached_tokens = usage["input_token_details"].get("cache_read") or 0
-                                    db_msg.cached_input_tokens = cached_tokens
+                                _apply_token_usage(db_msg, usage)
                             
                             db_session.add(db_msg)
                         await db_session.commit()
