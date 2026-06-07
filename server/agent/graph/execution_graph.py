@@ -42,6 +42,7 @@ class AgentExecutionGraph:
         runtime: AgentRuntime,
         rag_context: Callable[[], str],
     ) -> None:
+        """Store run dependencies and compile the LangGraph workflow."""
         self.session_id = session_id
         self.input_text = input_text
         self.payload = payload
@@ -51,12 +52,15 @@ class AgentExecutionGraph:
         self._compiled_graph = self._build_execution_graph()
 
     def __getattr__(self, name: str) -> Any:
+        """Forward unknown attributes to the compiled LangGraph object."""
         return getattr(self._compiled_graph, name)
 
     async def ainvoke(self, *args: Any, **kwargs: Any) -> Any:
+        """Invoke the compiled graph asynchronously."""
         return await self._compiled_graph.ainvoke(*args, **kwargs)
 
     def _build_execution_graph(self) -> Any:
+        """Compile the ordered graph nodes and conditional routing rules."""
         graph = StateGraph(AgentGraphState)
         graph.add_node("persist_input", self._graph_persist_input)
         graph.add_node("prepare_context", self._graph_prepare_context)
@@ -89,11 +93,13 @@ class AgentExecutionGraph:
         return graph.compile()
 
     def _route_after_prepare_context(self, state: AgentGraphState) -> str:
+        """Choose whether to run information collection before the main agent."""
         if should_collect_information(self.input_text):
             return "information_collect"
         return "execute_agent"
 
     def _route_after_execute(self, state: AgentGraphState) -> str:
+        """Choose the post-main-agent branch for report or final persistence."""
         if should_generate_writeup(self.input_text):
             return "writeup"
         elif should_collect_information(self.input_text):
@@ -104,6 +110,7 @@ class AgentExecutionGraph:
         self,
         state: AgentGraphState,
     ) -> AgentGraphState:
+        """Persist the user request and create the live assistant placeholder."""
         run = state["run"]
         await self._emit_graph_node(run, "persist_input", "running")
         try:
@@ -127,6 +134,7 @@ class AgentExecutionGraph:
         self,
         state: AgentGraphState,
     ) -> AgentGraphState:
+        """Load tools, history, RAG context, and the effective system prompt."""
         run = state["run"]
         await self._emit_graph_node(run, "prepare_context", "running")
         if run.user_msg_id is None or run.assistant_msg_id is None:
@@ -158,6 +166,7 @@ class AgentExecutionGraph:
         self,
         state: AgentGraphState,
     ) -> AgentGraphState:
+        """Generate and store a pre-run information collection brief."""
         run = state["run"]
         await self._emit_graph_node(run, "information_collect", "running")
         try:
@@ -196,6 +205,7 @@ class AgentExecutionGraph:
         self,
         state: AgentGraphState,
     ) -> AgentGraphState:
+        """Run the main agent and tag any new AI messages it returns."""
         run = state["run"]
         await self._emit_graph_node(run, "execute_agent", "running")
         try:
@@ -217,6 +227,7 @@ class AgentExecutionGraph:
         return {"run": run}
 
     async def _graph_writeup(self, state: AgentGraphState) -> AgentGraphState:
+        """Generate a report from accumulated messages and save it as an artifact."""
         run = state["run"]
         await self._emit_graph_node(run, "writeup", "running")
         try:
@@ -247,6 +258,7 @@ class AgentExecutionGraph:
         self,
         state: AgentGraphState,
     ) -> AgentGraphState:
+        """Persist final output, trace metadata, token usage, and done event."""
         run = state["run"]
         await self._emit_graph_node(run, "persist_output", "running")
         if run.assistant_msg_id is None:
@@ -300,6 +312,7 @@ class AgentExecutionGraph:
         node_id: str,
         status: str,
     ) -> None:
+        """Update graph status, persist trace metadata, and stream the event."""
         self._set_graph_node_status(run, node_id, status)
         if run.assistant_msg_id is not None:
             await self._persist_trace_metadata(run)
@@ -311,10 +324,12 @@ class AgentExecutionGraph:
         node_id: str,
         status: str,
     ) -> None:
+        """Queue a graph status event from synchronous routing callbacks."""
         self._set_graph_node_status(run, node_id, status)
         run.queue.put_nowait(self._graph_node_event(node_id, status))
 
     def _graph_node_event(self, node_id: str, status: str) -> AgentStreamEvent:
+        """Build the stream event payload for a graph node status change."""
         return stream_event(
             "graph_node",
             {
@@ -329,6 +344,7 @@ class AgentExecutionGraph:
         node_id: str,
         status: str,
     ) -> None:
+        """Mutate the run-local graph node status snapshot."""
         for node in run.graph_nodes:
             if node["id"] == node_id:
                 node["status"] = status
@@ -347,6 +363,7 @@ class AgentExecutionGraph:
         *,
         persist_output_status: str | None = None,
     ) -> dict[str, Any]:
+        """Build the trace metadata stored on assistant messages."""
         graph_nodes = [dict(node) for node in run.graph_nodes]
         if persist_output_status is not None:
             for node in graph_nodes:
@@ -361,6 +378,7 @@ class AgentExecutionGraph:
         }
 
     async def _persist_trace_metadata(self, run: AgentRunContext) -> None:
+        """Write the current trace snapshot onto the assistant placeholder."""
         if run.assistant_msg_id is None:
             return
         await self._messages.persist_trace_metadata(
@@ -369,6 +387,7 @@ class AgentExecutionGraph:
         )
 
     def agent_model_names(self) -> dict[str, str]:
+        """Return resolved model names keyed by graph agent name."""
         return {
             INFORMATION_COLLECT_AGENT_NAME: self._runtime.agent_model_name(
                 INFORMATION_COLLECT_AGENT_NAME
@@ -382,6 +401,7 @@ def _append_information_collect_prompt(
     full_system_prompt: str,
     collection_markdown: str,
 ) -> str:
+    """Append the collection brief to the main agent system prompt."""
     section = (
         "INFORMATION COLLECTION BRIEF:\n"
         f"{collection_markdown.strip()}"
@@ -397,6 +417,7 @@ def _tag_new_ai_messages(
     start_index: int,
     name: str,
 ) -> None:
+    """Tag new AI messages with the graph agent that produced them."""
     for index in range(start_index, len(messages)):
         message = messages[index]
         if isinstance(message, AIMessage):
@@ -404,6 +425,7 @@ def _tag_new_ai_messages(
 
 
 def _with_agent_name(message: AIMessage, name: str) -> AIMessage:
+    """Return an AI message carrying the persisted graph agent name."""
     try:
         message.name = name
         return message
