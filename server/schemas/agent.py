@@ -16,7 +16,6 @@ class AgentRunRequest(BaseModel):
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     enable_1m_context: Optional[bool] = None
-    is_deep_agent: Optional[bool] = True
     enable_rag: Optional[bool] = False
     tools: Optional[List[str]] = None
     mcp_servers: Optional[List[str]] = None
@@ -72,7 +71,6 @@ class AgentSessionUpdate(BaseModel):
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     enable_1m_context: Optional[bool] = None
-    is_deep_agent: Optional[bool] = None
     enable_rag: Optional[bool] = None
     tools: Optional[List[str]] = None
     mcp_servers: Optional[List[str]] = None
@@ -89,7 +87,6 @@ class AgentSessionResponse(BaseModel):
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     enable_1m_context: Optional[bool] = None
-    is_deep_agent: Optional[bool] = None
     enable_rag: Optional[bool] = False
     tools: Optional[List[str]] = None
     mcp_servers: Optional[List[str]] = None
@@ -110,7 +107,6 @@ class AgentSessionTemplateCreate(BaseModel):
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     enable_1m_context: Optional[bool] = None
-    is_deep_agent: Optional[bool] = None
     enable_rag: Optional[bool] = None
     tools: Optional[List[str]] = None
     mcp_servers: Optional[List[str]] = None
@@ -126,7 +122,6 @@ class AgentSessionTemplateUpdate(BaseModel):
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     enable_1m_context: Optional[bool] = None
-    is_deep_agent: Optional[bool] = None
     enable_rag: Optional[bool] = None
     tools: Optional[List[str]] = None
     mcp_servers: Optional[List[str]] = None
@@ -143,7 +138,6 @@ class AgentSessionTemplateResponse(BaseModel):
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     enable_1m_context: Optional[bool] = None
-    is_deep_agent: Optional[bool] = None
     enable_rag: Optional[bool] = False
     tools: Optional[List[str]] = None
     mcp_servers: Optional[List[str]] = None

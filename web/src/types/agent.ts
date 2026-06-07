@@ -50,7 +50,6 @@ export type AgentSession = {
   temperature?: number | null
   max_tokens?: number | null
   enable_1m_context?: boolean | null
-  is_deep_agent?: boolean | null
   enable_rag?: boolean | null
   tools?: string[] | null
   mcp_servers?: string[] | null
@@ -67,7 +66,6 @@ export type AgentSessionTemplate = {
   temperature?: number | null
   max_tokens?: number | null
   enable_1m_context?: boolean | null
-  is_deep_agent?: boolean | null
   enable_rag?: boolean | null
   tools?: string[] | null
   mcp_servers?: string[] | null

@@ -21,7 +21,6 @@ const props = defineProps<{
   temperature: number
   maxTokens: number
   enable1mContext: boolean
-  isDeepAgent: boolean
   enableRag: boolean
   isLoading: boolean
   isToolsLoading: boolean
@@ -35,7 +34,6 @@ const emit = defineEmits<{
   (e: 'update:temperature', val: number): void
   (e: 'update:maxTokens', val: number): void
   (e: 'update:enable1mContext', val: boolean): void
-  (e: 'update:isDeepAgent', val: boolean): void
   (e: 'update:enableRag', val: boolean): void
   (e: 'save-template'): void
   (e: 'apply-template', templateId: number): void
@@ -216,20 +214,6 @@ const deleteSelectedTemplate = () => {
         rows="6"
         class="flex min-h-[140px] w-full rounded-md border border-input bg-background px-3 py-2 text-xs ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
         :disabled="isRunning"
-      />
-    </div>
-
-    <div class="flex items-center justify-between rounded-lg border p-3">
-      <div>
-        <Label>Deep Agent</Label>
-        <p class="text-xs text-muted-foreground">Use advanced agent reasoning.</p>
-      </div>
-      <input 
-        type="checkbox" 
-        :checked="isDeepAgent" 
-        @change="emit('update:isDeepAgent', ($event.target as HTMLInputElement).checked)"
-        class="h-4 w-4" 
-        :disabled="isRunning" 
       />
     </div>
 

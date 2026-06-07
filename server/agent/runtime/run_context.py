@@ -48,8 +48,7 @@ class AgentRunContext:
     history_messages: list[BaseMessage] = field(default_factory=list)
     full_system_prompt: str = ""
 
-    # Main-agent message output. In deep-agent mode this is the state message
-    # list returned by DeepAgent; in simple mode it is normalized manually.
+    # Main-agent message output returned by DeepAgent.
     all_messages: list[Any] = field(default_factory=list)
 
     # Final text emitted in the done event after persistence chooses the best

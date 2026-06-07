@@ -16,6 +16,7 @@ from server.core.util import get_data_path
 from server.models.llm import LLMConfig
 from server.schemas.agent import AgentRunRequest
 
+SYSTEM_PROMPT = """"""
 
 class AgentRuntime:
     """Build models, prompts, tools, and execution backends for one run.
@@ -44,7 +45,7 @@ class AgentRuntime:
     def build_system_prompt(self, *, mcp_tools: list[Any], rag_context: str) -> str:
         """Combine session prompt, MCP usage guidance, and RAG context."""
 
-        full_system_prompt = self.payload.system_prompt or ""
+        full_system_prompt = self.payload.system_prompt or SYSTEM_PROMPT
         if mcp_tools:
             # MCP tools are exposed through router tools, so the model needs
             # explicit instructions instead of seeing every remote tool eagerly.

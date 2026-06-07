@@ -96,13 +96,18 @@ class AgentExecutionGraph:
         """Choose whether to run information collection before the main agent."""
         if should_collect_information(self.input_text):
             return "information_collect"
+        self._skip_pending_graph_node(state["run"], "information_collect")
         return "execute_agent"
 
     def _route_after_execute(self, state: AgentGraphState) -> str:
         """Choose the post-main-agent branch for report or final persistence."""
         if should_generate_writeup(self.input_text):
             return "writeup"
-        elif should_collect_information(self.input_text):
+        self._skip_pending_graph_node(state["run"], "writeup")
+        if (
+            should_collect_information(self.input_text)
+            and state["run"].information_collect_message is None
+        ):
             return "information_collect"
         return "persist_output"
 
@@ -327,6 +332,14 @@ class AgentExecutionGraph:
         """Queue a graph status event from synchronous routing callbacks."""
         self._set_graph_node_status(run, node_id, status)
         run.queue.put_nowait(self._graph_node_event(node_id, status))
+
+    def _skip_pending_graph_node(self, run: AgentRunContext, node_id: str) -> None:
+        """Mark an unvisited optional graph node as skipped."""
+        for node in run.graph_nodes:
+            if node["id"] == node_id:
+                if node["status"] == "pending":
+                    self._enqueue_graph_node(run, node_id, "skipped")
+                return
 
     def _graph_node_event(self, node_id: str, status: str) -> AgentStreamEvent:
         """Build the stream event payload for a graph node status change."""

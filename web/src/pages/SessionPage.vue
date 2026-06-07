@@ -52,7 +52,6 @@ const selectedConfigId = ref<number | null>(null)
 const prompt = ref('')
 const output = ref<any[]>([])
 const isRunning = ref(false)
-const isDeepAgent = ref(true)
 const streamError = ref('')
 const sessionSocket = ref<WebSocket | null>(null)
 const toolEvents = ref<EventRecord[]>([])
@@ -781,7 +780,6 @@ const onSessionChange = (id: number | null) => {
       maxTokens.value = session.max_tokens ?? 512
       enable1mContext.value = !!session.enable_1m_context
       enableRag.value = !!session.enable_rag
-      isDeepAgent.value = session.is_deep_agent ?? true
       selectedTools.value = session.tools || availableTools.value.map(t => t.name)
       selectedMcpServers.value = session.mcp_servers || []
       agentConfigs.value = { ...(session.agent_configs || {}) }
@@ -955,7 +953,6 @@ const saveSessionConfig = async () => {
         temperature: temperature.value,
         max_tokens: maxTokens.value,
         enable_1m_context: enable1mContext.value,
-        is_deep_agent: isDeepAgent.value,
         enable_rag: enableRag.value,
         tools: selectedTools.value,
         mcp_servers: selectedMcpServers.value,
@@ -970,7 +967,6 @@ const saveSessionConfig = async () => {
       session.temperature = temperature.value
       session.max_tokens = maxTokens.value
       session.enable_1m_context = enable1mContext.value
-      session.is_deep_agent = isDeepAgent.value
       session.enable_rag = enableRag.value
       session.tools = selectedTools.value
       session.mcp_servers = selectedMcpServers.value
@@ -994,7 +990,6 @@ const currentSettingsPayload = (name?: string) => ({
   temperature: temperature.value,
   max_tokens: maxTokens.value,
   enable_1m_context: enable1mContext.value,
-  is_deep_agent: isDeepAgent.value,
   enable_rag: enableRag.value,
   tools: [...selectedTools.value],
   mcp_servers: [...selectedMcpServers.value],
@@ -1053,7 +1048,6 @@ const applySessionTemplate = async (templateId: number) => {
   temperature.value = template.temperature ?? 0.3
   maxTokens.value = template.max_tokens ?? 100000
   enable1mContext.value = !!template.enable_1m_context
-  isDeepAgent.value = template.is_deep_agent ?? true
   enableRag.value = !!template.enable_rag
   selectedTools.value = template.tools || []
   selectedMcpServers.value = template.mcp_servers || []
@@ -1102,7 +1096,6 @@ const startRun = async () => {
         temperature: temperature.value,
         max_tokens: maxTokens.value,
         enable_1m_context: enable1mContext.value,
-        is_deep_agent: isDeepAgent.value,
         enable_rag: enableRag.value,
         tools: selectedTools.value,
         mcp_servers: selectedMcpServers.value,
@@ -1402,7 +1395,6 @@ watch(
     temperature, 
     maxTokens, 
     enable1mContext, 
-    isDeepAgent, 
     enableRag, 
     selectedTools, 
     selectedMcpServers,
@@ -1822,7 +1814,6 @@ watch(
                 v-model:temperature="temperature"
                 v-model:maxTokens="maxTokens"
                 v-model:enable1mContext="enable1mContext"
-                v-model:isDeepAgent="isDeepAgent"
                 v-model:enableRag="enableRag"
                 :configs="configs"
                 :availableTools="availableTools"

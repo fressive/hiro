@@ -171,9 +171,6 @@ const formatDate = (dateStr: string) => {
         </CardHeader>
         <CardContent class="flex-1 pb-3">
           <div class="flex flex-wrap gap-2">
-            <div v-if="session.is_deep_agent" class="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold transition-colors bg-primary/10 text-primary border-transparent">
-              Deep Agent
-            </div>
             <div v-if="session.enable_rag" class="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold transition-colors bg-secondary text-secondary-foreground border-transparent">
               RAG
             </div>

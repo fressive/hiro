@@ -181,7 +181,6 @@ async def _start_agent_run(
     active_session.temperature = payload.temperature
     active_session.max_tokens = payload.max_tokens
     active_session.enable_1m_context = payload.enable_1m_context
-    active_session.is_deep_agent = payload.is_deep_agent
     active_session.enable_rag = payload.enable_rag
     active_session.tools = payload.tools
     active_session.mcp_servers = payload.mcp_servers
