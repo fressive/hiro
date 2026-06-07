@@ -386,11 +386,19 @@ const statusDotClass = (status: GraphNodeStatus) => {
 const graphEdgeClass = (edge: GraphEdgeRecord) => {
   const source = nodeMap.value.get(edge.from)
   const target = nodeMap.value.get(edge.to)
-  if (source?.status === 'error' || target?.status === 'error') return 'stroke-destructive'
+  const sourceIndex = nodeOrder.value.get(edge.from)
+  const targetIndex = nodeOrder.value.get(edge.to)
+  const isBackwardEdge = (
+    sourceIndex !== undefined
+    && targetIndex !== undefined
+    && sourceIndex > targetIndex
+  )
+  if (isBackwardEdge) return 'stroke-muted-foreground/25'
   if (target?.status === 'running') return 'stroke-primary'
   if (source?.status === 'skipped' || target?.status === 'skipped') return 'stroke-muted-foreground/30'
   if (source?.status === 'done' && target?.status && target.status !== 'pending') return 'stroke-primary/70'
   if (source?.status === 'done') return 'stroke-primary/35'
+  if (source?.status === 'error' || target?.status === 'error') return 'stroke-muted-foreground/25'
   return 'stroke-muted-foreground/25'
 }
 
