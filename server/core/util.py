@@ -112,7 +112,7 @@ def run_command(
             logger.error("[session_id: %d] %s", session_id, error_msg)
             return error_msg
         else:
-            logger.debug("[session_id: %d] Finished running command: %s", session_id, stdout)
+            logger.debug("[session_id: %d] Finished running command.", session_id)
             return stdout
     except subprocess.TimeoutExpired:
         error_msg = f"Command timed out after {timeout} seconds"
