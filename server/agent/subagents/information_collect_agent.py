@@ -13,12 +13,14 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
+from server.agent.tools.feroxbuster import build_session_feroxbuster_tool
 from server.agent.utils.tool_call_ids import normalize_model_messages
 from server.core.util import get_data_path
 
 
 MAX_INFORMATION_CONTEXT_CHARS = 40000
 MAX_EXISTING_INFO_CHARS = 20000
+MAX_INFORMATION_TOOL_ROUNDS = 4
 URL_PATTERN = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
 INFORMATION_COLLECT_INTENT_KEYWORDS = (
     "information collect",
@@ -47,12 +49,15 @@ Responsibilities:
 - Summarize relevant evidence already present in prior conversation or INFO.md.
 - Propose concrete next collection steps, tools, and artifacts to update.
 - Call out missing prerequisites or ambiguity that would affect collection.
+- Use feroxbuster when authorized target URLs need web path discovery.
 
 Rules:
 - Do not claim that commands, scans, requests, or exploits were executed unless
   that evidence is present in the provided context.
 - Keep findings clearly separated from next-step recommendations.
 - Prefer actionable bullets over generic methodology.
+- Treat feroxbuster output as evidence and include notable discovered paths,
+  status codes, redirects, and errors.
 - Return only Markdown, with no preamble."""
 
 
@@ -122,6 +127,7 @@ class InformationCollectAgent:
         self.input_text = input_text
         self._build_llm = build_llm
         self.callback = callback
+        self.tools = [build_session_feroxbuster_tool(session_id)]
 
     async def generate(
         self,
@@ -130,18 +136,64 @@ class InformationCollectAgent:
     ) -> AIMessage:
         collection_context = self.build_context(history_messages=history_messages)
         config = {"callbacks": [self.callback]} if self.callback is not None else None
+        messages: list[BaseMessage] = [
+            SystemMessage(content=INFORMATION_COLLECT_SYSTEM_PROMPT),
+            HumanMessage(content=collection_context),
+        ]
+        tools_by_name = {tool.name: tool for tool in self.tools}
+        llm = self._build_llm()
+        llm_with_tools = (
+            llm.bind_tools(self.tools) if hasattr(llm, "bind_tools") else llm
+        )
+        latest_ai_message: AIMessage | None = None
+
+        for _ in range(MAX_INFORMATION_TOOL_ROUNDS):
+            result = await llm_with_tools.ainvoke(messages, config=config)
+            result_messages = _normalize_result_messages(result)
+            messages.extend(result_messages)
+
+            latest_ai_message = _last_ai_message(result_messages)
+            if latest_ai_message is None:
+                continue
+
+            tool_calls = getattr(latest_ai_message, "tool_calls", None) or []
+            if not tool_calls:
+                return latest_ai_message
+
+            for index, tool_call in enumerate(tool_calls):
+                tool_message = await _execute_tool_call(
+                    tool_call,
+                    tools_by_name,
+                    config=config,
+                    fallback_id=f"information_collect_tool_{index}",
+                )
+                messages.append(tool_message)
+
+        if latest_ai_message is not None and _extract_message_text(latest_ai_message):
+            return latest_ai_message
+
+        return await self._summarize_after_tool_limit(messages, config=config)
+
+    async def _summarize_after_tool_limit(
+        self,
+        messages: list[BaseMessage],
+        *,
+        config: dict[str, Any] | None,
+    ) -> AIMessage:
+        summary_request = HumanMessage(
+            content=(
+                "Summarize the available information collection evidence now. "
+                "Do not call more tools."
+            )
+        )
         result = await self._build_llm().ainvoke(
-            [
-                SystemMessage(content=INFORMATION_COLLECT_SYSTEM_PROMPT),
-                HumanMessage(content=collection_context),
-            ],
+            [*messages, summary_request],
             config=config,
         )
-        result_messages = result if isinstance(result, list) else [result]
-        normalized_messages = normalize_model_messages(result_messages)
-        for message in reversed(normalized_messages):
-            if isinstance(message, AIMessage):
-                return message
+        result_messages = _normalize_result_messages(result)
+        latest_ai_message = _last_ai_message(result_messages)
+        if latest_ai_message is not None:
+            return latest_ai_message
         return AIMessage(
             content="\n\n".join(
                 _extract_message_text(message) for message in result_messages
@@ -191,6 +243,51 @@ class InformationCollectAgent:
             "The oldest information collection context was truncated.\n\n"
             + context[-MAX_INFORMATION_CONTEXT_CHARS:]
         )
+
+
+def _normalize_result_messages(result: Any) -> list[BaseMessage]:
+    result_messages = result if isinstance(result, list) else [result]
+    return normalize_model_messages(result_messages)
+
+
+def _last_ai_message(messages: list[BaseMessage]) -> AIMessage | None:
+    for message in reversed(messages):
+        if isinstance(message, AIMessage):
+            return message
+    return None
+
+
+async def _execute_tool_call(
+    tool_call: dict[str, Any],
+    tools_by_name: dict[str, Any],
+    *,
+    config: dict[str, Any] | None,
+    fallback_id: str,
+) -> ToolMessage:
+    tool_name = str(tool_call.get("name") or "")
+    tool_call_id = str(tool_call.get("id") or fallback_id)
+    tool = tools_by_name.get(tool_name)
+    if tool is None:
+        return ToolMessage(
+            content=f"Error: unknown information collection tool: {tool_name}",
+            tool_call_id=tool_call_id,
+            name=tool_name or "unknown_tool",
+        )
+
+    args = tool_call.get("args") or {}
+    if not isinstance(args, dict):
+        args = {"target_url": str(args)}
+
+    try:
+        output = await tool.ainvoke(args, config=config)
+    except Exception as exc:
+        output = f"Error running {tool_name}: {exc}"
+
+    return ToolMessage(
+        content=str(output),
+        tool_call_id=tool_call_id,
+        name=tool_name,
+    )
 
 
 def _format_message_for_information_collection(message: Any) -> str:
