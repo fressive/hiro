@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Square, Loader2, Trash2, ChevronLeft, BarChart3, MessageSquare, Files, SlidersHorizontal, X, SendHorizontal, Pencil, Check } from '@lucide/vue'
+import { Square, Loader2, Trash2, ChevronLeft, BarChart3, MessageSquare, Files, SlidersHorizontal, X, SendHorizontal, Pencil, Check, GripVertical } from '@lucide/vue'
 import {
   DialogClose,
   DialogContent,
@@ -58,6 +58,7 @@ const maxTokens = ref(100000)
 const enable1mContext = ref(false)
 const enableRag = ref(false)
 const responseScroll = ref<HTMLDivElement | null>(null)
+const chatLayout = ref<HTMLDivElement | null>(null)
 const expandedMessages = ref<Record<number, boolean>>({})
 const isTemplateDialogOpen = ref(false)
 const templateName = ref('')
@@ -70,12 +71,19 @@ const isRenamingSelectedSession = ref(false)
 const selectedSessionTitleDraft = ref('')
 const selectedTitleInput = ref<HTMLInputElement | null>(null)
 const selectedSessionStorageKey = 'HIRO_SELECTED_AGENT_SESSION_ID'
+const graphPanelWidthStorageKey = 'HIRO_EXECUTION_GRAPH_PANEL_WIDTH'
+const GRAPH_PANEL_MIN_WIDTH = 240
+const GRAPH_PANEL_MAX_WIDTH = 560
+const GRAPH_PANEL_CHAT_MIN_WIDTH = 420
+const GRAPH_PANEL_LAYOUT_RESERVED_WIDTH = 48
 let socketSessionId: number | null = null
 let socketConnectPromise: Promise<void> | null = null
 let manualSocketClose = false
 
 const innerTab = ref<'chat' | 'stats' | 'files'>('chat')
 const showSettings = ref(false)
+const graphPanelWidth = ref(320)
+const isResizingGraphPanel = ref(false)
 
 type SessionStats = {
   total_tokens: number
@@ -306,6 +314,81 @@ const visibleGraphEdges = computed(() => {
   if (graphNodes.value.length > 0 || isRunning.value) return graphEdges.value
   return latestTraceGraphEdges.value
 })
+
+const chatLayoutStyle = computed<Record<string, string>>(() => ({
+  '--execution-graph-width': `${graphPanelWidth.value}px`,
+}))
+
+const graphPanelWidthMax = () => {
+  const width = chatLayout.value?.getBoundingClientRect().width
+  if (!width) return GRAPH_PANEL_MAX_WIDTH
+  return Math.min(
+    GRAPH_PANEL_MAX_WIDTH,
+    Math.max(
+      GRAPH_PANEL_MIN_WIDTH,
+      width - GRAPH_PANEL_CHAT_MIN_WIDTH - GRAPH_PANEL_LAYOUT_RESERVED_WIDTH,
+    ),
+  )
+}
+
+const clampGraphPanelWidth = (width: number) => {
+  return Math.round(Math.min(Math.max(width, GRAPH_PANEL_MIN_WIDTH), graphPanelWidthMax()))
+}
+
+const setGraphPanelWidth = (width: number) => {
+  graphPanelWidth.value = clampGraphPanelWidth(width)
+}
+
+const persistGraphPanelWidth = () => {
+  localStorage.setItem(graphPanelWidthStorageKey, String(graphPanelWidth.value))
+}
+
+const handleGraphPanelResizeMove = (event: PointerEvent) => {
+  if (!isResizingGraphPanel.value) return
+  const rect = chatLayout.value?.getBoundingClientRect()
+  if (!rect) return
+  event.preventDefault()
+  setGraphPanelWidth(event.clientX - rect.left)
+}
+
+const stopGraphPanelResize = () => {
+  if (!isResizingGraphPanel.value) return
+  isResizingGraphPanel.value = false
+  window.removeEventListener('pointermove', handleGraphPanelResizeMove)
+  window.removeEventListener('pointerup', stopGraphPanelResize)
+  window.removeEventListener('pointercancel', stopGraphPanelResize)
+  persistGraphPanelWidth()
+}
+
+const startGraphPanelResize = (event: PointerEvent) => {
+  event.preventDefault()
+  isResizingGraphPanel.value = true
+  window.addEventListener('pointermove', handleGraphPanelResizeMove)
+  window.addEventListener('pointerup', stopGraphPanelResize)
+  window.addEventListener('pointercancel', stopGraphPanelResize)
+  handleGraphPanelResizeMove(event)
+}
+
+const handleGraphPanelResizeKeydown = (event: KeyboardEvent) => {
+  const step = event.shiftKey ? 40 : 16
+  if (event.key === 'ArrowLeft') {
+    event.preventDefault()
+    setGraphPanelWidth(graphPanelWidth.value - step)
+    persistGraphPanelWidth()
+  } else if (event.key === 'ArrowRight') {
+    event.preventDefault()
+    setGraphPanelWidth(graphPanelWidth.value + step)
+    persistGraphPanelWidth()
+  } else if (event.key === 'Home') {
+    event.preventDefault()
+    setGraphPanelWidth(GRAPH_PANEL_MIN_WIDTH)
+    persistGraphPanelWidth()
+  } else if (event.key === 'End') {
+    event.preventDefault()
+    setGraphPanelWidth(GRAPH_PANEL_MAX_WIDTH)
+    persistGraphPanelWidth()
+  }
+}
 
 const scrollResponseToBottom = async () => {
   await nextTick()
@@ -1076,6 +1159,11 @@ const toggleMcpServer = (serverName: string) => {
 }
 
 onMounted(async () => {
+  const savedGraphPanelWidth = Number(localStorage.getItem(graphPanelWidthStorageKey))
+  if (Number.isFinite(savedGraphPanelWidth) && savedGraphPanelWidth > 0) {
+    setGraphPanelWidth(savedGraphPanelWidth)
+  }
+
   await fetchConfigs()
   await fetchTools()
   await fetchMcpServers()
@@ -1089,6 +1177,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  stopGraphPanelResize()
   closeSessionSocket()
 })
 
@@ -1239,13 +1328,36 @@ watch(
         </div>
         <div v-else class="relative h-full min-h-0 overflow-hidden">
           <template v-if="innerTab === 'chat'">
-            <div class="grid h-full min-h-0 grid-rows-[14rem_minmax(0,1fr)] gap-4 overflow-hidden lg:grid-cols-[18rem_minmax(0,1fr)] lg:grid-rows-1 xl:grid-cols-[20rem_minmax(0,1fr)]">
+            <div
+              ref="chatLayout"
+              class="session-chat-layout grid h-full min-h-0 gap-3 overflow-hidden"
+              :class="{ 'is-resizing': isResizingGraphPanel }"
+              :style="chatLayoutStyle"
+            >
               <ExecutionGraphPanel
                 class="min-h-0"
                 :graph-nodes="visibleGraphNodes"
                 :graph-edges="visibleGraphEdges"
                 :is-running="isRunning"
               />
+
+              <div
+                role="separator"
+                aria-label="Resize execution graph panel"
+                aria-orientation="vertical"
+                :aria-valuemin="GRAPH_PANEL_MIN_WIDTH"
+                :aria-valuemax="GRAPH_PANEL_MAX_WIDTH"
+                :aria-valuenow="Math.round(graphPanelWidth)"
+                tabindex="0"
+                :class="[
+                  'hidden cursor-col-resize touch-none select-none items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:flex',
+                  isResizingGraphPanel && 'bg-muted text-foreground',
+                ]"
+                @pointerdown="startGraphPanelResize"
+                @keydown="handleGraphPanelResizeKeydown"
+              >
+                <GripVertical class="h-4 w-4" />
+              </div>
 
               <div class="flex min-h-0 flex-col overflow-hidden">
                 <div class="min-h-0 flex-1 overflow-hidden">
@@ -1556,6 +1668,22 @@ watch(
 </template>
 
 <style scoped>
+.session-chat-layout {
+  grid-template-rows: 14rem minmax(0, 1fr);
+}
+
+.session-chat-layout.is-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+@media (min-width: 1024px) {
+  .session-chat-layout {
+    grid-template-columns: minmax(15rem, var(--execution-graph-width, 320px)) 0.75rem minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+}
+
 .mask-fade {
   mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
 }
