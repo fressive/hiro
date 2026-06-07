@@ -29,6 +29,12 @@ from server.agent.tool_call_ids import (
     normalize_ai_message_tool_call_ids,
     normalize_model_messages,
 )
+from server.agent.writeup_agent import (
+    WriteupAgent,
+    looks_like_writeup,
+    save_writeup_artifact,
+    should_generate_writeup,
+)
 from server.agent.tools import agent_tools
 from server.core.logger import logger
 from server.core.util import get_data_path
@@ -127,29 +133,6 @@ def _stream_text_segments(value: Any) -> list[tuple[str, str]]:
 
 
 _TOKEN_USAGE_KEYS = ("input_tokens", "output_tokens", "cached_input_tokens")
-_MAX_WRITEUP_CONTEXT_CHARS = 60000
-_WRITEUP_INTENT_KEYWORDS = (
-    "writeup",
-    "write up",
-    "report",
-    "pentest report",
-    "summary",
-    "总结",
-    "报告",
-    "复盘",
-)
-_WRITEUP_SYSTEM_PROMPT = """You are a writeup subagent.
-
-Generate a concise Markdown penetration-test report from the prior steps,
-conversation, tool outputs, and final assistant result provided by the graph.
-
-Requirements:
-- Base the report only on provided evidence. Do not invent findings, flags, or exploitation results.
-- Preserve important commands, URLs, payloads, tool outputs, and artifacts when they support a finding.
-- If evidence is incomplete, say what is missing and mark the finding as unverified.
-- Include these sections when applicable: Summary, Scope, Steps Performed, Findings, Evidence, Impact, Recommendations, Artifacts, and Next Steps.
-- If a flag or proof value is present in the evidence, include it explicitly. If none is present, write "Flag: Not found".
-- Return only the report Markdown, with no preamble."""
 _GRAPH_NODES = [
     {
         "id": "persist_input",
@@ -576,7 +559,7 @@ def attach_trace_metadata_fallback(messages: list[AgentMessage]) -> None:
     )
     target.extra_metadata = {
         **(target.extra_metadata or {}),
-        "graph_nodes": _fallback_graph_nodes(writeup_done=_looks_like_writeup(target.content)),
+        "graph_nodes": _fallback_graph_nodes(writeup_done=looks_like_writeup(target.content)),
         "graph_edges": _GRAPH_EDGES,
         "tool_events": tool_events,
         "mcp_events": [],
@@ -666,13 +649,6 @@ def _fallback_graph_nodes(*, writeup_done: bool) -> list[dict[str, Any]]:
             }
         )
     return nodes
-
-
-def _looks_like_writeup(content: str | None) -> bool:
-    if not content:
-        return False
-    normalized = content.lower()
-    return "# report" in normalized or "# writeup" in normalized or "## findings" in normalized
 
 
 def _reconstruct_tool_events(messages: list[AgentMessage]) -> list[dict[str, Any]]:
@@ -1040,85 +1016,22 @@ class CustomAgent:
                 await db_session.commit()
 
     def _should_generate_writeup(self) -> bool:
-        user_input = self.input_text.lower()
-        return any(keyword in user_input for keyword in _WRITEUP_INTENT_KEYWORDS)
+        return should_generate_writeup(self.input_text)
 
     async def _generate_writeup(self, run: _AgentRunContext) -> AIMessage:
-        report_context = self._build_writeup_context(run)
-        result = await self._build_llm().ainvoke(
-            [
-                SystemMessage(content=_WRITEUP_SYSTEM_PROMPT),
-                HumanMessage(content=report_context),
-            ],
-            config={"callbacks": [run.callback]},
+        writeup_agent = WriteupAgent(
+            session_id=self.session_id,
+            input_text=self.input_text,
+            build_llm=self._build_llm,
+            callback=run.callback,
         )
-        result_messages = result if isinstance(result, list) else [result]
-        normalized_messages = normalize_model_messages(result_messages)
-        for message in reversed(normalized_messages):
-            if isinstance(message, AIMessage):
-                return message
-        return AIMessage(content="\n\n".join(_extract_message_text(m) for m in result_messages))
-
-    def _build_writeup_context(self, run: _AgentRunContext) -> str:
-        messages = run.all_messages or (
-            run.history_messages + [HumanMessage(content=self.input_text)]
+        return await writeup_agent.generate(
+            all_messages=run.all_messages,
+            history_messages=run.history_messages,
         )
-        rendered_messages = [
-            rendered
-            for message in messages
-            if (rendered := self._format_message_for_writeup(message))
-        ]
-        context = "\n\n".join(
-            [
-                f"Session ID: {self.session_id}",
-                f"Generated at: {datetime.now(timezone.utc).isoformat()}",
-                f"Current user request: {self.input_text}",
-                "Prior steps, tool outputs, and assistant results:",
-                *rendered_messages,
-            ]
-        )
-        if len(context) <= _MAX_WRITEUP_CONTEXT_CHARS:
-            return context
-        return (
-            "The oldest context was truncated to fit the writeup window.\n\n"
-            + context[-_MAX_WRITEUP_CONTEXT_CHARS:]
-        )
-
-    def _format_message_for_writeup(self, message: Any) -> str:
-        label = self._message_role_label(message)
-        parts: list[str] = []
-        content = _extract_message_text(message)
-        if content:
-            parts.append(content)
-
-        tool_calls = getattr(message, "tool_calls", None)
-        if tool_calls:
-            parts.append(
-                "Tool calls: "
-                + json.dumps(tool_calls, ensure_ascii=True, default=str)
-            )
-
-        if not parts:
-            return ""
-        return f"### {label}\n" + "\n".join(parts)
-
-    def _message_role_label(self, message: Any) -> str:
-        if isinstance(message, HumanMessage):
-            return "User"
-        if isinstance(message, AIMessage):
-            return "Assistant"
-        if isinstance(message, ToolMessage):
-            name = getattr(message, "name", None) or "tool"
-            return f"Tool: {name}"
-        message_type = getattr(message, "type", None)
-        if message_type:
-            return str(message_type).title()
-        return type(message).__name__
 
     async def _save_writeup_artifact(self, report_markdown: str) -> None:
-        data_path = get_data_path(self.session_id) / "data"
-        data_path.mkdir(parents=True, exist_ok=True)
-        (data_path / "WRITEUP.md").write_text(report_markdown, encoding="utf-8")
+        save_writeup_artifact(self.session_id, report_markdown)
 
     async def _load_rag_context(self) -> None:
         if self._rag_loaded or not self.payload.enable_rag:
