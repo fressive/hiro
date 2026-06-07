@@ -20,3 +20,7 @@ reports/
 *.db
 
 .langgraph_api/
+
+.codex
+
+.pytest_cache
