@@ -8,9 +8,9 @@ from typing import Any, Callable
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from sqlalchemy import select
 
-from server.agent import token_usage
-from server.agent.streaming import StreamCallbackHandler
-from server.agent.tool_call_ids import (
+from server.agent.events.streaming import StreamCallbackHandler
+from server.agent.persistence import token_usage
+from server.agent.utils.tool_call_ids import (
     is_valid_tool_call_id,
     normalize_ai_message_tool_call_ids,
 )

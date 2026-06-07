@@ -8,9 +8,9 @@ from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
-from server.agent.context import SessionContext
-from server.agent.streaming import StreamCallbackHandler
-from server.agent.tool_call_ids import ToolCallIdMiddleware, normalize_model_messages
+from server.agent.events.streaming import StreamCallbackHandler
+from server.agent.runtime.context import SessionContext
+from server.agent.utils.tool_call_ids import ToolCallIdMiddleware, normalize_model_messages
 from server.agent.tools import agent_tools
 from server.core.util import get_data_path
 from server.models.models import LLMConfig

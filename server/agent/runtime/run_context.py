@@ -7,8 +7,8 @@ from typing import Any, TypedDict
 
 from langchain_core.messages import BaseMessage
 
-from server.agent.execution_trace import initial_graph_nodes
-from server.agent.streaming import AgentStreamEvent, StreamCallbackHandler
+from server.agent.events.streaming import AgentStreamEvent, StreamCallbackHandler
+from server.agent.trace.execution_trace import initial_graph_nodes
 
 
 @dataclass

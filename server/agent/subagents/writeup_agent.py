@@ -12,7 +12,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
-from server.agent.tool_call_ids import normalize_model_messages
+from server.agent.utils.tool_call_ids import normalize_model_messages
 from server.core.util import get_data_path
 
 

@@ -1,5 +1,5 @@
 from langchain.tools import tool, ToolRuntime
-from server.agent.context import SessionContext
+from server.agent.runtime.context import SessionContext
 from server.core.logger import logger
 
 @tool(
@@ -14,4 +14,3 @@ def log(message: str,
         return f"Successfully logged: {message}"
     except Exception as e:
         return f"Error logging message: {str(e)}"
-    

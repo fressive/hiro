@@ -6,7 +6,7 @@ from typing import Any
 
 from langchain_core.callbacks import BaseCallbackHandler
 
-from server.agent import token_usage
+from server.agent.persistence import token_usage
 
 
 @dataclass(frozen=True)

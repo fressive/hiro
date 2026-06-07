@@ -3,7 +3,7 @@
 import json
 from typing import Any
 
-from server.agent.writeup_agent import looks_like_writeup
+from server.agent.subagents.writeup_agent import looks_like_writeup
 from server.models.models import AgentMessage
 
 
