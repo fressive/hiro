@@ -1,7 +1,10 @@
 from langchain.agents.middleware.types import ModelResponse
 from langchain_core.messages import AIMessage, ToolMessage
 
-from server.agent.tool_call_ids import ToolCallIdMiddleware, normalize_ai_message_tool_call_ids
+from server.agent.utils.tool_call_ids import (
+    ToolCallIdMiddleware,
+    normalize_ai_message_tool_call_ids,
+)
 
 
 def test_normalize_ai_message_tool_call_ids_fills_missing_ids():

@@ -3,14 +3,14 @@ from types import SimpleNamespace
 from langchain_core.messages import AIMessageChunk
 from langchain_core.outputs import ChatGenerationChunk
 
-from server.agent.token_usage import (
+from server.agent.persistence.token_usage import (
     add_token_usage,
     llm_result_token_usage,
     message_token_usage,
     normalize_token_usage,
     subtract_token_usage,
 )
-from server.agent.streaming import stream_text_segments
+from server.agent.events.streaming import stream_text_segments
 
 
 def test_stream_text_segments_extracts_structured_text_blocks():

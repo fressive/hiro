@@ -12,9 +12,9 @@ from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage
 from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
-from server.agent.sandboxed_backend import SessionSandboxedBackend
+from server.agent.runtime.sandboxed_backend import SessionSandboxedBackend
 from server.agent.tools import agent_tools
-from server.agent.context import SessionContext
+from server.agent.runtime.context import SessionContext
 from langchain_core.callbacks import get_usage_metadata_callback, BaseCallbackHandler
 from langchain_core.outputs import LLMResult
 from typing import Any, List, Dict

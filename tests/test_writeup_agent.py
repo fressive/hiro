@@ -1,6 +1,6 @@
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from server.agent.writeup_agent import (
+from server.agent.subagents.writeup_agent import (
     WriteupAgent,
     looks_like_writeup,
     save_writeup_artifact,
@@ -58,7 +58,10 @@ def test_writeup_agent_builds_context_from_run_messages():
 
 
 def test_save_writeup_artifact_writes_writeup_file(tmp_path, monkeypatch):
-    monkeypatch.setattr("server.agent.writeup_agent.get_data_path", lambda _: tmp_path)
+    monkeypatch.setattr(
+        "server.agent.subagents.writeup_agent.get_data_path",
+        lambda _: tmp_path,
+    )
 
     save_writeup_artifact(123, "# Report\n\nDone")
 
