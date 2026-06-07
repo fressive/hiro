@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from server.core.config import settings
 from server.core.security import verify_token, verify_password
 from server.db import AsyncSessionLocal
-from server.models.models import APIToken
+from server.models.token import APIToken
 
 
 class AuthMiddleware(BaseHTTPMiddleware):

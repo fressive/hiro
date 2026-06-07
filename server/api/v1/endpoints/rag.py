@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db import get_session
-from server.models.models import RagDocument, RagEmbeddingConfig, RagVectorStoreConfig
+from server.models.rag import RagDocument, RagEmbeddingConfig, RagVectorStoreConfig
 from server.service.rag_service import RagService
 from server.schemas.rag import (
     RagDocumentCreate,

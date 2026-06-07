@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from server.core.logger import logger
 from server.db import AsyncSessionLocal
-from server.models.models import MCPServerConfig
+from server.models.mcp import MCPServerConfig
 from server.service.mcp_service import McpService
 
 

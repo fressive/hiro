@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 
-from server.models.models import RagDocument, RagEmbeddingConfig, RagVectorStoreConfig
+from server.models.rag import RagDocument, RagEmbeddingConfig, RagVectorStoreConfig
 from server.db import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)

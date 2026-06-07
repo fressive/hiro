@@ -16,7 +16,7 @@ from server.agent.utils.tool_call_ids import (
 )
 from server.core.logger import logger
 from server.db import AsyncSessionLocal
-from server.models.models import AgentMessage, AgentSession
+from server.models.agent import AgentMessage, AgentSession
 
 
 def extract_message_text(message: Any) -> str:

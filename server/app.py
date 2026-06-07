@@ -5,6 +5,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+import server.models  # noqa: F401
 from server.api.v1.router import router as v1_router
 from server.middleware.auth import AuthMiddleware
 from server.core.config import settings
@@ -53,6 +54,4 @@ def create_app() -> FastAPI:
             logger.warning("Database bootstrap failed during startup: %s", exc)
 
     return app
-
-
 

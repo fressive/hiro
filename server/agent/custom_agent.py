@@ -24,7 +24,7 @@ from server.agent.subagents.writeup_agent import (
 from server.agent.trace.execution_trace import GRAPH_EDGES, GRAPH_NODES
 from server.agent.utils.tool_call_ids import normalize_ai_message_tool_call_ids
 from server.core.logger import logger
-from server.models.models import LLMConfig
+from server.models.llm import LLMConfig
 from server.schemas.agent import AgentRunRequest
 from server.service.rag_service import RagService
 

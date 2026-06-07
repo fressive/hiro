@@ -31,12 +31,8 @@ from server.agent.trace.execution_trace import (
 )
 from server.agent.tools import agent_tools
 from server.db import AsyncSessionLocal, get_session
-from server.models.models import (
-    LLMConfig,
-    AgentSession,
-    AgentSessionTemplate,
-    AgentMessage,
-)
+from server.models.agent import AgentMessage, AgentSession, AgentSessionTemplate
+from server.models.llm import LLMConfig
 from server.core.logger import logger
 from server.core.util import get_data_path
 from server.schemas.agent import (

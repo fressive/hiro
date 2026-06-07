@@ -10,10 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import sessionmaker
 
+import server.models  # noqa: F401
 from server.core.config import settings
 from server.core.security import hash_password
 from server.db import Base, make_async_engine
-from server.models.models import User
+from server.models.user import User
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]

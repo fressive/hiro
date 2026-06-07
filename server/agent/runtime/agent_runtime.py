@@ -13,7 +13,7 @@ from server.agent.runtime.context import SessionContext
 from server.agent.utils.tool_call_ids import ToolCallIdMiddleware, normalize_model_messages
 from server.agent.tools import agent_tools
 from server.core.util import get_data_path
-from server.models.models import LLMConfig
+from server.models.llm import LLMConfig
 from server.schemas.agent import AgentRunRequest
 
 

@@ -6,7 +6,7 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 from contextlib import AsyncExitStack
 
-from server.models.models import MCPServerConfig
+from server.models.mcp import MCPServerConfig
 from langchain_mcp_adapters.sessions import create_session
 from langchain_mcp_adapters.tools import load_mcp_tools
 
