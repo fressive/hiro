@@ -166,7 +166,6 @@ const normalizeGraphNode = (
     label: node.label ? String(node.label) : String(node.id),
     description: node.description ? String(node.description) : undefined,
     status,
-    optional: Boolean(node.optional),
     node_type: node.node_type ? String(node.node_type) : undefined,
     agent_name: node.agent_name ? String(node.agent_name) : undefined,
   }
@@ -387,16 +386,10 @@ const latestTraceGraphEdges = computed(() => {
   return []
 })
 
-const mergeGraphNodesWithBackendTemplate = (
-  sourceNodes: GraphNodeRecord[],
-  missingOptionalStatus: GraphNodeStatus = 'pending',
-) => {
+const mergeGraphNodesWithBackendTemplate = (sourceNodes: GraphNodeRecord[]) => {
   if (backendGraphNodes.value.length === 0) return sourceNodes
 
-  const merged = backendGraphNodes.value.map((node) => ({
-    ...node,
-    status: node.optional ? missingOptionalStatus : node.status,
-  }))
+  const merged = backendGraphNodes.value.map((node) => ({ ...node }))
   const byId = new Map(merged.map((node, index) => [node.id, index]))
 
   for (const sourceNode of sourceNodes) {
@@ -413,7 +406,6 @@ const mergeGraphNodesWithBackendTemplate = (
       ...sourceNode,
       label: sourceNode.label || templateNode.label,
       description: sourceNode.description ?? templateNode.description,
-      optional: sourceNode.optional ?? templateNode.optional,
       node_type: sourceNode.node_type ?? templateNode.node_type,
       agent_name: sourceNode.agent_name ?? templateNode.agent_name,
     }
@@ -443,7 +435,7 @@ const visibleGraphNodes = computed(() => {
     return mergeGraphNodesWithBackendTemplate(graphNodes.value)
   }
   if (!isRunning.value && latestTraceGraphNodes.value.length > 0) {
-    return mergeGraphNodesWithBackendTemplate(latestTraceGraphNodes.value, 'skipped')
+    return mergeGraphNodesWithBackendTemplate(latestTraceGraphNodes.value)
   }
   return backendGraphNodes.value
 })
@@ -1176,7 +1168,6 @@ const upsertGraphNode = (incoming: Partial<GraphNodeRecord> & { id: string, stat
       status: incoming.status || existing.status,
       label: incoming.label || existing.label,
       description: incoming.description ?? existing.description,
-      optional: incoming.optional ?? existing.optional,
       node_type: incoming.node_type ?? existing.node_type,
       agent_name: incoming.agent_name ?? existing.agent_name,
     }
@@ -1187,7 +1178,6 @@ const upsertGraphNode = (incoming: Partial<GraphNodeRecord> & { id: string, stat
       label: incoming.label || template?.label || incoming.id,
       description: incoming.description ?? template?.description,
       status: incoming.status || 'pending',
-      optional: incoming.optional ?? template?.optional,
       node_type: incoming.node_type ?? template?.node_type,
       agent_name: incoming.agent_name ?? template?.agent_name,
     })
@@ -1247,7 +1237,6 @@ const applyEvent = (event: string, payload: any) => {
         label: payload.label,
         description: payload.description,
         status: payload.status || 'running',
-        optional: payload.optional,
         node_type: payload.node_type,
         agent_name: payload.agent_name,
       })

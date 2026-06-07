@@ -26,7 +26,6 @@ export type GraphNodeRecord = {
   label: string
   description?: string
   status: GraphNodeStatus
-  optional?: boolean
   node_type?: 'agent' | string
   agent_name?: string
 }

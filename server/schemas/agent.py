@@ -37,7 +37,6 @@ class AgentGraphNodeResponse(BaseModel):
     label: str
     description: Optional[str] = None
     status: Optional[str] = None
-    optional: Optional[bool] = None
     node_type: Optional[str] = None
     agent_name: Optional[str] = None
 

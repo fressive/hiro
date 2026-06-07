@@ -6,7 +6,12 @@ from langchain_core.messages import AIMessage, HumanMessage
 from server.agent.custom_agent import CustomAgent
 from server.agent.events.streaming import AgentStreamEvent, StreamCallbackHandler
 from server.agent.runtime.run_context import AgentRunContext
-from server.agent.trace.execution_trace import GRAPH_EDGES, GRAPH_NODES
+from server.agent.trace.execution_trace import (
+    GRAPH_EDGES,
+    GRAPH_NODES,
+    fallback_graph_nodes,
+    initial_graph_nodes,
+)
 from server.models.llm import LLMConfig
 from server.schemas.agent import AgentRunRequest
 
@@ -18,6 +23,15 @@ def test_execution_graph_metadata_edges_reference_known_nodes():
         edge["from"] in node_ids and edge["to"] in node_ids
         for edge in GRAPH_EDGES
     )
+
+
+def test_execution_graph_trace_nodes_do_not_include_optional_field():
+    graph_nodes = [
+        *initial_graph_nodes(),
+        *fallback_graph_nodes(writeup_done=False),
+    ]
+
+    assert all("optional" not in node for node in graph_nodes)
 
 
 def _parse_stream_event(raw_event: AgentStreamEvent):
@@ -207,11 +221,12 @@ def test_custom_agent_execution_graph_routes_to_information_collect_node(monkeyp
         async def load_history(*, user_msg_id, assistant_msg_id):
             return [HumanMessage(content="previous hint")]
 
-        async def generate_information_collect(run):
+        async def generate_information_collect(self, *, history_messages):
             calls.append("information_collect")
             return AIMessage(content="## Scope\n- https://target.test")
 
-        async def append_information_collect_artifact(collection_markdown):
+        def append_information_collect_artifact(session_id, collection_markdown):
+            assert session_id == 123
             calls.append(("info_artifact", collection_markdown))
 
         async def execute(**kwargs):
@@ -253,13 +268,11 @@ def test_custom_agent_execution_graph_routes_to_information_collect_node(monkeyp
         )
         monkeypatch.setattr(agent._messages, "load_history", load_history)
         monkeypatch.setattr(
-            agent._execution_graph,
-            "_generate_information_collect",
+            "server.agent.graph.execution_graph.InformationCollectAgent.generate",
             generate_information_collect,
         )
         monkeypatch.setattr(
-            agent._execution_graph,
-            "_append_information_collect_artifact",
+            "server.agent.graph.execution_graph.append_information_collect_artifact",
             append_information_collect_artifact,
         )
         monkeypatch.setattr(agent._runtime, "execute", execute)
@@ -427,11 +440,12 @@ def test_custom_agent_execution_graph_routes_to_writeup_node(monkeypatch):
                 AIMessage(content="Verified exposed admin panel."),
             ]
 
-        async def generate_writeup(run):
+        async def generate_writeup(self, *, all_messages, history_messages):
             calls.append("writeup")
             return AIMessage(content="# Report\n\nFound exposed admin panel.")
 
-        async def save_writeup_artifact(report_markdown):
+        def save_writeup_artifact(session_id, report_markdown):
+            assert session_id == 123
             calls.append(("artifact", report_markdown))
 
         async def save_final_messages(**kwargs):
@@ -471,13 +485,11 @@ def test_custom_agent_execution_graph_routes_to_writeup_node(monkeypatch):
         monkeypatch.setattr(agent._messages, "load_history", load_history)
         monkeypatch.setattr(agent._runtime, "execute", execute)
         monkeypatch.setattr(
-            agent._execution_graph,
-            "_generate_writeup",
+            "server.agent.graph.execution_graph.WriteupAgent.generate",
             generate_writeup,
         )
         monkeypatch.setattr(
-            agent._execution_graph,
-            "_save_writeup_artifact",
+            "server.agent.graph.execution_graph.save_writeup_artifact",
             save_writeup_artifact,
         )
         monkeypatch.setattr(agent._messages, "save_final_messages", save_final_messages)

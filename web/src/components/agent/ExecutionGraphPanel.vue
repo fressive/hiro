@@ -615,7 +615,7 @@ const truncateLabel = (value: string, maxLength = 18) => {
                 y="39"
                 class="fill-current text-[9px] opacity-85"
               >
-                {{ graphStatusLabel(node.status) }}<template v-if="node.optional"> / Optional</template>
+                {{ graphStatusLabel(node.status) }}
               </text>
             </g>
           </svg>

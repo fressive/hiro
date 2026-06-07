@@ -25,11 +25,9 @@ from server.agent.trace.execution_trace import GRAPH_EDGES
 from server.agent.utils.tool_call_ids import normalize_ai_message_tool_call_ids
 from server.schemas.agent import AgentRunRequest
 
-
-INFORMATION_COLLECT_AGENT_NAME = "information_collect_agent"
 MAIN_AGENT_NAME = "main_agent"
+INFORMATION_COLLECT_AGENT_NAME = "information_collect_agent"
 WRITEUP_AGENT_NAME = "writeup_agent"
-
 
 class AgentExecutionGraph:
     """Build and run the session agent graph."""
@@ -83,7 +81,7 @@ class AgentExecutionGraph:
             {
                 "writeup": "writeup",
                 "persist_output": "persist_output",
-                "information_collect": "information_collect"
+                "information_collect": "information_collect",
             },
         )
         graph.add_edge("writeup", "persist_output")
@@ -91,15 +89,15 @@ class AgentExecutionGraph:
         return graph.compile()
 
     def _route_after_prepare_context(self, state: AgentGraphState) -> str:
-        if self._should_collect_information():
+        if should_collect_information(self.input_text):
             return "information_collect"
-        self._enqueue_graph_node(state["run"], "information_collect", "skipped")
         return "execute_agent"
 
     def _route_after_execute(self, state: AgentGraphState) -> str:
-        if self._should_generate_writeup():
+        if should_generate_writeup(self.input_text):
             return "writeup"
-        self._enqueue_graph_node(state["run"], "writeup", "skipped")
+        elif should_collect_information(self.input_text):
+            return "information_collect"
         return "persist_output"
 
     async def _graph_persist_input(
@@ -163,15 +161,26 @@ class AgentExecutionGraph:
         run = state["run"]
         await self._emit_graph_node(run, "information_collect", "running")
         try:
+            information_collect_agent = InformationCollectAgent(
+                session_id=self.session_id,
+                input_text=self.input_text,
+                build_llm=lambda: self._runtime.build_llm(
+                    INFORMATION_COLLECT_AGENT_NAME
+                ),
+                callback=run.callback,
+            )
             collection_message = _with_agent_name(
-                await self._generate_information_collect(run),
+                await information_collect_agent.generate(
+                    history_messages=run.history_messages,
+                ),
                 INFORMATION_COLLECT_AGENT_NAME,
             )
             run.information_collect_text = extract_message_text(collection_message)
             if run.information_collect_text:
                 run.information_collect_message = collection_message
-                await self._append_information_collect_artifact(
-                    run.information_collect_text
+                append_information_collect_artifact(
+                    self.session_id,
+                    run.information_collect_text,
                 )
                 run.full_system_prompt = _append_information_collect_prompt(
                     run.full_system_prompt,
@@ -211,13 +220,22 @@ class AgentExecutionGraph:
         run = state["run"]
         await self._emit_graph_node(run, "writeup", "running")
         try:
+            writeup_agent = WriteupAgent(
+                session_id=self.session_id,
+                input_text=self.input_text,
+                build_llm=lambda: self._runtime.build_llm(WRITEUP_AGENT_NAME),
+                callback=run.callback,
+            )
             writeup_message = _with_agent_name(
-                await self._generate_writeup(run),
+                await writeup_agent.generate(
+                    all_messages=run.all_messages,
+                    history_messages=run.history_messages,
+                ),
                 WRITEUP_AGENT_NAME,
             )
             run.writeup_text = extract_message_text(writeup_message)
             if run.writeup_text:
-                await self._save_writeup_artifact(run.writeup_text)
+                save_writeup_artifact(self.session_id, run.writeup_text)
             run.all_messages.append(writeup_message)
         except Exception:
             await self._emit_graph_node(run, "writeup", "error")
@@ -349,47 +367,6 @@ class AgentExecutionGraph:
             assistant_msg_id=run.assistant_msg_id,
             metadata=self.run_metadata(run),
         )
-
-    def _should_generate_writeup(self) -> bool:
-        return should_generate_writeup(self.input_text)
-
-    def _should_collect_information(self) -> bool:
-        return should_collect_information(self.input_text)
-
-    async def _generate_information_collect(
-        self,
-        run: AgentRunContext,
-    ) -> AIMessage:
-        information_collect_agent = InformationCollectAgent(
-            session_id=self.session_id,
-            input_text=self.input_text,
-            build_llm=lambda: self._runtime.build_llm(INFORMATION_COLLECT_AGENT_NAME),
-            callback=run.callback,
-        )
-        return await information_collect_agent.generate(
-            history_messages=run.history_messages,
-        )
-
-    async def _append_information_collect_artifact(
-        self,
-        collection_markdown: str,
-    ) -> None:
-        append_information_collect_artifact(self.session_id, collection_markdown)
-
-    async def _generate_writeup(self, run: AgentRunContext) -> AIMessage:
-        writeup_agent = WriteupAgent(
-            session_id=self.session_id,
-            input_text=self.input_text,
-            build_llm=lambda: self._runtime.build_llm(WRITEUP_AGENT_NAME),
-            callback=run.callback,
-        )
-        return await writeup_agent.generate(
-            all_messages=run.all_messages,
-            history_messages=run.history_messages,
-        )
-
-    async def _save_writeup_artifact(self, report_markdown: str) -> None:
-        save_writeup_artifact(self.session_id, report_markdown)
 
     def agent_model_names(self) -> dict[str, str]:
         return {
