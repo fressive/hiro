@@ -6,12 +6,12 @@ from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 from langchain.chat_models import init_chat_model
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage
 
 from server.agent.events.streaming import StreamCallbackHandler
 from server.agent.runtime.context import SessionContext
-from server.agent.utils.tool_call_ids import ToolCallIdMiddleware, normalize_model_messages
 from server.agent.tools import agent_tools
+from server.agent.utils.tool_call_ids import ToolCallIdMiddleware
 from server.core.util import get_data_path
 from server.models.llm import LLMConfig
 from server.schemas.agent import AgentRunRequest
@@ -74,57 +74,31 @@ class AgentRuntime:
         llm = self.build_llm("main_agent")
         current_tools = self.selected_builtin_tools() + mcp_tools
 
-        if self.payload.is_deep_agent:
-            # DeepAgent manages tool calls, subagents, and filesystem state. The
-            # surrounding graph still handles persistence and final message tags.
-            skills_sources = ["./skills"]
-            agent = create_deep_agent(
-                llm,
-                tools=current_tools,
-                context_schema=SessionContext,
-                backend=self.build_backend(),
-                skills=skills_sources,
-                system_prompt=full_system_prompt,
-                middleware=[ToolCallIdMiddleware()],
-                subagents=[
-                    {
-                        **GENERAL_PURPOSE_SUBAGENT,
-                        "skills": skills_sources,
-                        "middleware": [ToolCallIdMiddleware()],
-                    }
-                ],
-            )
-            result_state = await agent.ainvoke(
+        # DeepAgent manages tool calls, subagents, and filesystem state. The
+        # surrounding graph still handles persistence and final message tags.
+        skills_sources = ["./skills"]
+        agent = create_deep_agent(
+            llm,
+            tools=current_tools,
+            context_schema=SessionContext,
+            backend=self.build_backend(),
+            skills=skills_sources,
+            system_prompt=full_system_prompt,
+            middleware=[ToolCallIdMiddleware()],
+            subagents=[
                 {
-                    "messages": history_messages
-                    + [HumanMessage(content=self.input_text)]
-                },
-                config={"callbacks": [callback]},
-                context=SessionContext(self.session_id),
-            )
-            return result_state.get("messages", [])
-
-        # Non-deep mode is a direct chat-model invocation with optional tools.
-        # It returns the same shape as DeepAgent: prior history, user input, and
-        # normalized model responses.
-        llm_messages: list[BaseMessage] = []
-        if full_system_prompt:
-            llm_messages.append(SystemMessage(content=full_system_prompt))
-        llm_messages.extend(history_messages)
-        llm_messages.append(HumanMessage(content=self.input_text))
-        llm_with_tools = llm.bind_tools(current_tools) if current_tools else llm
-        result_payload = await llm_with_tools.ainvoke(
-            llm_messages,
+                    **GENERAL_PURPOSE_SUBAGENT,
+                    "skills": skills_sources,
+                    "middleware": [ToolCallIdMiddleware()],
+                }
+            ],
+        )
+        result_state = await agent.ainvoke(
+            {"messages": history_messages + [HumanMessage(content=self.input_text)]},
             config={"callbacks": [callback]},
+            context=SessionContext(self.session_id),
         )
-        result_messages = (
-            result_payload if isinstance(result_payload, list) else [result_payload]
-        )
-        return (
-            history_messages
-            + [HumanMessage(content=self.input_text)]
-            + normalize_model_messages(result_messages)
-        )
+        return result_state.get("messages", [])
 
     def build_llm(self, agent_name: str | None = None) -> Any:
         """Create a LangChain chat model for the requested graph agent."""
