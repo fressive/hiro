@@ -13,7 +13,7 @@ import {
   Sun,
   BotMessageSquare,
 } from '@lucide/vue'
-import { useRouter } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { useDark, useToggle } from '@vueuse/core'
 
 import {
@@ -30,6 +30,7 @@ import {
 } from '@/components/ui/sidebar'
 
 const router = useRouter()
+const route = useRoute()
 const isDark = useDark()
 const toggleDark = useToggle(isDark)
 
@@ -46,8 +47,8 @@ const items = [
   },
   {
     title: 'Tools',
-    url: '#',
     icon: Wrench,
+    disabled: true,
   },
   {
     title: 'LLM',
@@ -91,11 +92,19 @@ const handleLogout = () => {
         <SidebarGroupContent>
           <SidebarMenu>
             <SidebarMenuItem v-for="item in items" :key="item.title">
-              <SidebarMenuButton as-child>
-                <a :href="item.url">
+              <SidebarMenuButton
+                v-if="item.url"
+                as-child
+                :is-active="route.path === item.url"
+              >
+                <RouterLink :to="item.url">
                   <component :is="item.icon" />
                   <span>{{ item.title }}</span>
-                </a>
+                </RouterLink>
+              </SidebarMenuButton>
+              <SidebarMenuButton v-else disabled>
+                <component :is="item.icon" />
+                <span>{{ item.title }}</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
           </SidebarMenu>

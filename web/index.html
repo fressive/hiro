@@ -4,7 +4,42 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
     <title>hiro-web</title>
+    <script>
+      (() => {
+        try {
+          const stored = localStorage.getItem('vueuse-color-scheme')
+          const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+          const isDark = stored === 'dark' || ((!stored || stored === 'auto') && prefersDark)
+          document.documentElement.classList.toggle('dark', isDark)
+          document.documentElement.style.colorScheme = isDark ? 'dark' : 'light'
+        } catch {
+          document.documentElement.classList.toggle(
+            'dark',
+            window.matchMedia('(prefers-color-scheme: dark)').matches,
+          )
+        }
+      })()
+    </script>
+    <style>
+      html {
+        background: #fff;
+        color-scheme: light;
+      }
+
+      html.dark {
+        background: #0a0a0a;
+        color-scheme: dark;
+      }
+
+      body,
+      #app {
+        min-height: 100vh;
+        margin: 0;
+        background: inherit;
+      }
+    </style>
   </head>
   <body>
     <div id="app"></div>
