@@ -12,6 +12,7 @@ import {
   Moon,
   Sun,
   BotMessageSquare,
+  MessageCircle,
 } from '@lucide/vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { useDark, useToggle } from '@vueuse/core'
@@ -43,12 +44,7 @@ const items = [
   {
     title: 'Sessions',
     url: '/sessions',
-    icon: BotMessageSquare,
-  },
-  {
-    title: 'Tools',
-    icon: Wrench,
-    disabled: true,
+    icon: MessageCircle,
   },
   {
     title: 'LLM',
