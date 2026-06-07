@@ -1,5 +1,6 @@
 """LLM construction and execution for session-scoped agents."""
 
+import asyncio
 from typing import Any
 
 from deepagents import create_deep_agent
@@ -13,6 +14,7 @@ from server.agent.runtime.context import SessionContext
 from server.agent.runtime.sandboxed_backend import SessionSandboxedBackend
 from server.agent.tools import agent_tools
 from server.agent.utils.tool_call_ids import ToolCallIdMiddleware
+from server.core.logger import logger
 from server.core.util import get_data_path
 from server.models.llm import LLMConfig
 from server.schemas.agent import AgentRunRequest
@@ -20,6 +22,19 @@ from server.schemas.agent import AgentRunRequest
 SYSTEM_PROMPT = """"""
 INFORMATION_COLLECT_AGENT_NAME = "information_collect_agent"
 WRITEUP_AGENT_NAME = "writeup_agent"
+MAX_STREAMING_ATTEMPTS = 2
+STREAM_RETRY_BACKOFF_SECONDS = 0.5
+RETRYABLE_STREAM_ERROR_MARKERS = (
+    "empty_stream",
+    "error code: 408",
+    "stream error",
+    "stream disconnected before completion",
+    "stream closed before response.completed",
+    "upstream stream closed before first payload",
+    "response.completed",
+    "remoteprotocolerror",
+    "incompleteread",
+)
 
 SPECIALIZED_SUBAGENT_DESCRIPTIONS = [
     {
@@ -60,6 +75,20 @@ Delegation rules:
   subagents.
 - Use the main agent only to coordinate, verify, gather evidence, and present
   results that are not owned by a specialized workflow subagent."""
+
+
+def is_retryable_stream_error(error: BaseException) -> bool:
+    """Return whether an exception represents a transient stream disconnect."""
+
+    if isinstance(error, BaseExceptionGroup):
+        return any(is_retryable_stream_error(child) for child in error.exceptions)
+
+    status_code = getattr(error, "status_code", None)
+    if status_code == 408:
+        return True
+
+    message = str(error).lower()
+    return any(marker in message for marker in RETRYABLE_STREAM_ERROR_MARKERS)
 
 
 class AgentRuntime:
@@ -129,13 +158,70 @@ class AgentRuntime:
     ) -> list[Any]:
         """Run the main agent and return the complete message sequence."""
 
-        llm = self.build_llm("main_agent")
         current_tools = self.selected_builtin_tools() + mcp_tools
-
-        # DeepAgent manages tool calls, subagents, and filesystem state. The
-        # surrounding graph still handles persistence and final message tags.
         skills_sources = ["./skills"]
         main_system_prompt = self.build_main_agent_prompt(full_system_prompt)
+
+        for attempt in range(1, MAX_STREAMING_ATTEMPTS + 2):
+            streaming = attempt <= MAX_STREAMING_ATTEMPTS
+            checkpoint_id = f"execute-agent-{attempt}"
+            snapshot = callback.snapshot() if callback is not None else None
+            if callback is not None:
+                callback.emit_event("live_checkpoint", {"id": checkpoint_id})
+
+            try:
+                messages = await self._execute_deep_agent(
+                    current_tools=current_tools,
+                    skills_sources=skills_sources,
+                    main_system_prompt=main_system_prompt,
+                    callback=callback,
+                    history_messages=history_messages,
+                    streaming=streaming,
+                )
+                if callback is not None:
+                    callback.emit_event("live_commit", {"id": checkpoint_id})
+                return messages
+            except Exception as exc:
+                if not streaming or not is_retryable_stream_error(exc):
+                    if callback is not None:
+                        callback.emit_event("live_commit", {"id": checkpoint_id})
+                    raise
+
+                if callback is not None and snapshot is not None:
+                    callback.rollback(snapshot)
+                    callback.emit_event(
+                        "live_rollback",
+                        {
+                            "id": checkpoint_id,
+                            "attempt": attempt,
+                            "retrying": True,
+                            "fallback": attempt == MAX_STREAMING_ATTEMPTS,
+                            "message": "Stream disconnected; retrying the model call.",
+                        },
+                    )
+                logger.warning(
+                    "Retryable stream error in session %s on attempt %s: %s",
+                    self.session_id,
+                    attempt,
+                    exc,
+                )
+                await asyncio.sleep(STREAM_RETRY_BACKOFF_SECONDS * attempt)
+
+        raise RuntimeError("Agent execution retry loop exited unexpectedly")
+
+    async def _execute_deep_agent(
+        self,
+        *,
+        current_tools: list[Any],
+        skills_sources: list[str],
+        main_system_prompt: str,
+        callback: StreamCallbackHandler,
+        history_messages: list[BaseMessage],
+        streaming: bool,
+    ) -> list[Any]:
+        """Execute one DeepAgent attempt."""
+
+        llm = self.build_llm("main_agent", streaming=streaming)
         agent = create_deep_agent(
             llm,
             tools=current_tools,
@@ -148,7 +234,7 @@ class AgentRuntime:
         )
         result_state = await agent.ainvoke(
             {"messages": history_messages + [HumanMessage(content=self.input_text)]},
-            config={"callbacks": [callback]},
+            config={"callbacks": [callback]} if callback is not None else None,
             context=SessionContext(self.session_id),
         )
         return result_state.get("messages", [])
@@ -164,7 +250,12 @@ class AgentRuntime:
             },
         ]
 
-    def build_llm(self, agent_name: str | None = None) -> Any:
+    def build_llm(
+        self,
+        agent_name: str | None = None,
+        *,
+        streaming: bool = True,
+    ) -> Any:
         """Create a LangChain chat model for the requested graph agent."""
 
         config = self.agent_config(agent_name)
@@ -190,17 +281,18 @@ class AgentRuntime:
             elif provider == "anthropic":
                 model_kwargs["betas"] = ["context-1m-2025-08-07"]
 
-        streaming_enabled = self.should_stream_llm(provider=provider, base_url=base_url)
         init_kwargs: dict[str, Any] = {
             "model": config.model,
             "model_provider": provider,
             "api_key": config.api_key,
             "base_url": base_url,
-            "streaming": streaming_enabled,
+            "streaming": streaming,
             "max_retries": 5,
         }
-        if not streaming_enabled:
+        if not streaming:
             init_kwargs["disable_streaming"] = True
+        elif provider == "openai" and base_url:
+            init_kwargs["stream_usage"] = False
 
         if self.payload.temperature is not None:
             init_kwargs["temperature"] = self.payload.temperature
@@ -208,14 +300,6 @@ class AgentRuntime:
             init_kwargs["max_tokens"] = self.payload.max_tokens
 
         return init_chat_model(**init_kwargs, **model_kwargs)
-
-    def should_stream_llm(self, *, provider: str, base_url: str | None) -> bool:
-        """Return whether runtime model calls should use streaming transport."""
-
-        # Several OpenAI-compatible gateways pass non-streaming pings but close
-        # streamed responses before the first payload. Native OpenAI and
-        # Anthropic keep streaming enabled for live token updates.
-        return not (provider == "openai" and bool(base_url))
 
     def agent_config(self, agent_name: str | None) -> LLMConfig:
         """Return the per-agent model config, falling back to session default."""

@@ -54,6 +54,11 @@ const output = ref<any[]>([])
 const isRunning = ref(false)
 const streamError = ref('')
 const sessionSocket = ref<WebSocket | null>(null)
+const liveTokenUsage = ref({
+  input_tokens: 0,
+  cached_input_tokens: 0,
+  output_tokens: 0,
+})
 const toolEvents = ref<EventRecord[]>([])
 const mcpEvents = ref<EventRecord[]>([])
 const graphNodes = ref<GraphNodeRecord[]>([])
@@ -88,6 +93,16 @@ const selectedSessionTitleDraft = ref('')
 const selectedTitleInput = ref<HTMLInputElement | null>(null)
 const selectedSessionStorageKey = 'HIRO_SELECTED_AGENT_SESSION_ID'
 const graphPanelWidthStorageKey = 'HIRO_EXECUTION_GRAPH_PANEL_WIDTH'
+let liveSnapshots: Record<string, {
+  output: any[]
+  toolEvents: EventRecord[]
+  mcpEvents: EventRecord[]
+  liveTokenUsage: {
+    input_tokens: number
+    cached_input_tokens: number
+    output_tokens: number
+  }
+}> = {}
 const GRAPH_PANEL_MIN_WIDTH = 240
 const GRAPH_PANEL_MAX_WIDTH = 560
 const GRAPH_PANEL_CHAT_MIN_WIDTH = 420
@@ -1138,6 +1153,12 @@ const clearLiveResponse = () => {
   output.value = []
   toolEvents.value = []
   mcpEvents.value = []
+  liveTokenUsage.value = {
+    input_tokens: 0,
+    cached_input_tokens: 0,
+    output_tokens: 0,
+  }
+  liveSnapshots = {}
   graphNodes.value = []
   graphEdges.value = []
   ragSources.value = []
@@ -1151,6 +1172,25 @@ const upsertEvent = (target: EventRecord[], incoming: EventRecord) => {
     target.push(incoming)
   }
 }
+
+const appendLiveToolBlock = (eventKind: 'tool' | 'mcp', eventId: string) => {
+  const exists = output.value.some((block) => (
+    block?.type === 'tool_event'
+    && block.eventKind === eventKind
+    && block.eventId === eventId
+  ))
+  if (!exists) {
+    output.value.push({ type: 'tool_event', eventKind, eventId })
+  }
+}
+
+const cloneLiveOutput = () => output.value.map((block) => ({ ...block }))
+const cloneEvents = (events: EventRecord[]) => events.map((event) => ({ ...event }))
+const normalizeLiveTokenUsage = (usage: any) => ({
+  input_tokens: Number(usage?.input_tokens || 0),
+  cached_input_tokens: Number(usage?.cached_input_tokens || 0),
+  output_tokens: Number(usage?.output_tokens || 0),
+})
 
 const upsertGraphNode = (incoming: Partial<GraphNodeRecord> & { id: string, status?: GraphNodeStatus }) => {
   const index = graphNodes.value.findIndex((item) => item.id === incoming.id)
@@ -1178,6 +1218,42 @@ const upsertGraphNode = (incoming: Partial<GraphNodeRecord> & { id: string, stat
 }
 
 const applyEvent = (event: string, payload: any) => {
+  if (event === 'live_checkpoint') {
+    const checkpointId = payload.id || 'default'
+    liveSnapshots[checkpointId] = {
+      output: cloneLiveOutput(),
+      toolEvents: cloneEvents(toolEvents.value),
+      mcpEvents: cloneEvents(mcpEvents.value),
+      liveTokenUsage: { ...liveTokenUsage.value },
+    }
+    return
+  }
+
+  if (event === 'live_rollback') {
+    const checkpointId = payload.id || 'default'
+    const snapshot = liveSnapshots[checkpointId]
+    if (snapshot) {
+      output.value = snapshot.output.map((block) => ({ ...block }))
+      toolEvents.value = cloneEvents(snapshot.toolEvents)
+      mcpEvents.value = cloneEvents(snapshot.mcpEvents)
+      liveTokenUsage.value = { ...snapshot.liveTokenUsage }
+    }
+    delete liveSnapshots[checkpointId]
+    return
+  }
+
+  if (event === 'live_commit') {
+    delete liveSnapshots[payload.id || 'default']
+    return
+  }
+
+  if (event === 'token_usage') {
+    liveTokenUsage.value = normalizeLiveTokenUsage(
+      payload.total_usage || payload.usage,
+    )
+    return
+  }
+
   if (event === 'status') {
     const wasRunning = isRunning.value
     isRunning.value = Boolean(payload.is_running)
@@ -1276,12 +1352,14 @@ const applyEvent = (event: string, payload: any) => {
   }
 
   if (event === 'tool_start') {
+    const eventId = payload.id || crypto.randomUUID()
     upsertEvent(toolEvents.value, {
-      id: payload.id || crypto.randomUUID(),
+      id: eventId,
       name: payload.name || 'tool',
       status: 'running',
       input: payload.input,
     })
+    appendLiveToolBlock('tool', eventId)
     return
   }
 
@@ -1306,12 +1384,14 @@ const applyEvent = (event: string, payload: any) => {
   }
 
   if (event === 'mcp_start') {
+    const eventId = payload.id || crypto.randomUUID()
     upsertEvent(mcpEvents.value, {
-      id: payload.id || crypto.randomUUID(),
+      id: eventId,
       name: payload.name || 'mcp',
       status: 'running',
       input: payload.input,
     })
+    appendLiveToolBlock('mcp', eventId)
     return
   }
 
@@ -1624,6 +1704,7 @@ watch(
                           :is-running="isRunning"
                           :stream-error="streamError"
                           :rag-sources="ragSources"
+                          :live-token-usage="liveTokenUsage"
                           :tool-events="toolEvents"
                           :mcp-events="mcpEvents"
                         />

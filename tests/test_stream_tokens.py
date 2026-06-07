@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 from langchain_core.messages import AIMessageChunk
@@ -10,7 +11,7 @@ from server.agent.persistence.token_usage import (
     normalize_token_usage,
     subtract_token_usage,
 )
-from server.agent.events.streaming import stream_text_segments
+from server.agent.events.streaming import StreamCallbackHandler, stream_text_segments
 
 
 def test_stream_text_segments_extracts_structured_text_blocks():
@@ -110,3 +111,37 @@ def test_callback_residual_usage_avoids_recounting_message_usage():
     assert add_token_usage(
         add_token_usage(first_message_usage, residual), second_message_usage
     ) == callback_usage
+
+
+def test_stream_callback_emits_token_usage_event():
+    async def run_test():
+        queue = asyncio.Queue()
+        callback = StreamCallbackHandler(queue, asyncio.get_running_loop())
+        response = SimpleNamespace(
+            llm_output={
+                "token_usage": {
+                    "prompt_tokens": 11,
+                    "completion_tokens": 3,
+                }
+            },
+            generations=[],
+        )
+
+        callback.on_llm_end(response)
+        event = await asyncio.wait_for(queue.get(), timeout=1)
+
+        assert event.event == "token_usage"
+        assert event.data == {
+            "usage": {
+                "input_tokens": 11,
+                "output_tokens": 3,
+                "cached_input_tokens": 0,
+            },
+            "total_usage": {
+                "input_tokens": 11,
+                "output_tokens": 3,
+                "cached_input_tokens": 0,
+            },
+        }
+
+    asyncio.run(run_test())

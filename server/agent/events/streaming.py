@@ -125,6 +125,39 @@ class StreamCallbackHandler(BaseCallbackHandler):
             self._queue.put(stream_event(event, data)), self._loop
         )
 
+    def emit_event(self, event: str, data: dict[str, Any]) -> None:
+        """Publish a control event on the live stream."""
+
+        self._enqueue(event, data)
+
+    def snapshot(self) -> dict[str, Any]:
+        """Capture streamed callback state before a retryable operation."""
+
+        return {
+            "tool_names": list(self._tool_names),
+            "mcp_names": list(self._mcp_names),
+            "tool_run_map": dict(self._tool_run_map),
+            "tool_events": [dict(event) for event in self._tool_events],
+            "mcp_events": [dict(event) for event in self._mcp_events],
+            "token_buffer": list(self._token_buffer),
+            "usage": dict(self._usage),
+        }
+
+    def rollback(self, snapshot: dict[str, Any]) -> None:
+        """Restore streamed callback state after a failed retry attempt."""
+
+        self._tool_names = list(snapshot.get("tool_names", []))
+        self._mcp_names = list(snapshot.get("mcp_names", []))
+        self._tool_run_map = dict(snapshot.get("tool_run_map", {}))
+        self._tool_events = [
+            dict(event) for event in snapshot.get("tool_events", [])
+        ]
+        self._mcp_events = [
+            dict(event) for event in snapshot.get("mcp_events", [])
+        ]
+        self._token_buffer = list(snapshot.get("token_buffer", []))
+        self._usage = dict(snapshot.get("usage", token_usage.empty_token_usage()))
+
     def _event_collection(self, tool_name: str) -> list[dict[str, Any]]:
         if tool_name.startswith("mcp__"):
             return self._mcp_events
@@ -160,6 +193,13 @@ class StreamCallbackHandler(BaseCallbackHandler):
             return
 
         self._usage = token_usage.add_token_usage(self._usage, usage)
+        self._enqueue(
+            "token_usage",
+            {
+                "usage": usage,
+                "total_usage": self.usage,
+            },
+        )
 
     def on_tool_start(self, serialized: dict, input_str: str, **kwargs: Any) -> None:
         tool_name = serialized.get("name") or "tool"

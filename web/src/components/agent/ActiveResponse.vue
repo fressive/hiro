@@ -9,6 +9,11 @@ const props = defineProps<{
   isRunning: boolean
   streamError: string
   ragSources: string[]
+  liveTokenUsage: {
+    input_tokens: number
+    cached_input_tokens: number
+    output_tokens: number
+  }
   toolEvents: EventRecord[]
   mcpEvents: EventRecord[]
 }>()
@@ -19,16 +24,36 @@ const hasResponseActivity = computed(() => {
   return outputLength.value > 0 || props.isRunning || Boolean(props.streamError)
 })
 
+const liveTokenTotal = computed(() => (
+  props.liveTokenUsage.input_tokens + props.liveTokenUsage.output_tokens
+))
+
 const blocks = computed(() => {
   if (Array.isArray(props.output)) return props.output
   if (isJsonBlocks(props.output)) return parseJsonBlocks(props.output)
   return []
 })
 
+const toolEventMap = computed(() => new Map(props.toolEvents.map((event) => [event.id, event])))
+const mcpEventMap = computed(() => new Map(props.mcpEvents.map((event) => [event.id, event])))
+
+const displayBlocks = computed(() => blocks.value.map((block: any) => {
+  if (block?.type !== 'tool_event') return block
+  const event = block.eventKind === 'mcp'
+    ? mcpEventMap.value.get(block.eventId)
+    : toolEventMap.value.get(block.eventId)
+  return { ...block, event }
+}))
+
 const expandedToolEvents = ref<Record<string, boolean>>({})
 
 const toggleToolEvent = (id: string) => {
   expandedToolEvents.value[id] = !expandedToolEvents.value[id]
+}
+
+const toolEventLabel = (block: any) => {
+  if (!block.event) return block.eventKind === 'mcp' ? 'MCP tool' : 'Tool'
+  return block.eventKind === 'mcp' ? `MCP: ${block.event.name}` : block.event.name
 }
 </script>
 
@@ -38,14 +63,24 @@ const toggleToolEvent = (id: string) => {
       <Bot class="h-4 w-4" />
     </div>
     <div class="min-w-0 max-w-4xl flex-1">
-      <p class="mb-2 text-xs font-semibold text-muted-foreground">Assistant</p>
+      <div class="mb-2 flex items-center justify-between gap-2">
+        <p class="text-xs font-semibold text-muted-foreground">Assistant</p>
+        <span
+          v-if="liveTokenTotal > 0"
+          class="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
+        >
+          in:{{ liveTokenUsage.input_tokens }}
+          <template v-if="liveTokenUsage.cached_input_tokens">/cached:{{ liveTokenUsage.cached_input_tokens }}</template>
+          /out:{{ liveTokenUsage.output_tokens }}
+        </span>
+      </div>
       <div v-if="isRunning && outputLength === 0" class="space-y-3">
         <div class="h-4 w-2/3 animate-pulse rounded bg-muted" />
         <div class="h-4 w-5/6 animate-pulse rounded bg-muted" />
         <div class="h-4 w-1/2 animate-pulse rounded bg-muted" />
       </div>
-      <template v-else-if="blocks.length > 0">
-        <div v-for="(block, idx) in blocks" :key="idx">
+      <template v-else-if="displayBlocks.length > 0">
+        <div v-for="(block, idx) in displayBlocks" :key="idx">
           <div v-if="block.type === 'thinking'" class="mb-3 rounded border-l-2 border-primary/30 bg-muted/40 p-2 text-[11px] italic text-muted-foreground">
             <p class="mb-1 flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-tighter opacity-70">
               <Bot class="h-3 w-3" />
@@ -54,6 +89,34 @@ const toggleToolEvent = (id: string) => {
             <pre class="whitespace-pre-wrap font-sans">{{ block.thinking || block.reasoning || block.text }}</pre>
           </div>
           <pre v-else-if="block.text" class="mb-2 whitespace-pre-wrap font-sans text-foreground">{{ block.text }}</pre>
+          <div v-else-if="block.type === 'tool_event' && block.event" class="mb-3 rounded-lg border bg-muted/10 p-3 text-xs">
+            <div
+              class="-m-1 flex cursor-pointer items-center justify-between gap-2 rounded p-1 transition-colors hover:bg-muted/50"
+              @click="toggleToolEvent(block.event.id)"
+            >
+              <span class="flex min-w-0 items-center gap-2 font-semibold">
+                <ChevronDown v-if="expandedToolEvents[block.event.id]" class="h-4 w-4 shrink-0 opacity-50" />
+                <ChevronRight v-else class="h-4 w-4 shrink-0 opacity-50" />
+                <Loader2 v-if="block.event.status === 'running'" class="h-3 w-3 shrink-0 animate-spin" />
+                <CheckCircle2 v-else-if="block.event.status === 'done'" class="h-3 w-3 shrink-0 text-emerald-500" />
+                <AlertCircle v-else class="h-3 w-3 shrink-0 text-destructive" />
+                <span class="truncate">{{ toolEventLabel(block) }}</span>
+              </span>
+              <span class="text-[10px] uppercase opacity-50">{{ block.event.status }}</span>
+            </div>
+            <div v-show="expandedToolEvents[block.event.id]" class="mt-2">
+              <div v-if="block.event.input" class="mb-2 overflow-x-auto rounded bg-muted/30 p-2">
+                <p class="mb-1 text-[9px] font-bold opacity-50">INPUT</p>
+                <pre class="whitespace-pre-wrap font-mono">{{ block.event.input }}</pre>
+              </div>
+              <div v-if="block.event.output" :class="['overflow-x-auto rounded p-2', block.event.status === 'error' ? 'bg-destructive/10' : 'bg-emerald-50/30']">
+                <p :class="['mb-1 text-[9px] font-bold', block.event.status === 'error' ? 'text-destructive/70' : 'text-emerald-600/50']">
+                  {{ block.event.status === 'error' ? 'ERROR' : 'OUTPUT' }}
+                </p>
+                <pre class="whitespace-pre-wrap font-mono">{{ block.event.output }}</pre>
+              </div>
+            </div>
+          </div>
           <pre v-else-if="block.type === 'tool_use'" class="mb-2 whitespace-pre-wrap font-sans text-xs italic text-foreground opacity-70">Using tool: {{ block.name }}</pre>
         </div>
       </template>
@@ -73,68 +136,6 @@ const toggleToolEvent = (id: string) => {
           >
             {{ source }}
           </span>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div v-if="isRunning && (toolEvents.length || mcpEvents.length)" class="mt-4 space-y-3 border-t pb-4 pt-4">
-    <p class="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Active Tool Execution</p>
-
-    <div v-for="event in toolEvents" :key="event.id" class="rounded-lg border p-3 text-xs">
-      <div
-        class="-m-1 mb-2 flex cursor-pointer items-center justify-between rounded p-1 transition-colors hover:bg-muted/50"
-        @click="toggleToolEvent(event.id)"
-      >
-        <span class="flex items-center gap-2 font-semibold">
-          <ChevronDown v-if="expandedToolEvents[event.id]" class="h-4 w-4 opacity-50" />
-          <ChevronRight v-else class="h-4 w-4 opacity-50" />
-          <Loader2 v-if="event.status === 'running'" class="h-3 w-3 animate-spin" />
-          <CheckCircle2 v-else-if="event.status === 'done'" class="h-3 w-3 text-emerald-500" />
-          <AlertCircle v-else class="h-3 w-3 text-destructive" />
-          {{ event.name }}
-        </span>
-        <span class="text-[10px] uppercase opacity-50">{{ event.status }}</span>
-      </div>
-      <div v-show="expandedToolEvents[event.id]">
-        <div v-if="event.input" class="mb-2 overflow-x-auto rounded bg-muted/30 p-2">
-          <p class="mb-1 text-[9px] font-bold opacity-50">INPUT</p>
-          <pre class="whitespace-pre-wrap font-mono">{{ event.input }}</pre>
-        </div>
-        <div v-if="event.output" :class="['overflow-x-auto rounded p-2', event.status === 'error' ? 'bg-destructive/10' : 'bg-emerald-50/30']">
-          <p :class="['mb-1 text-[9px] font-bold', event.status === 'error' ? 'text-destructive/70' : 'text-emerald-600/50']">
-            {{ event.status === 'error' ? 'ERROR' : 'OUTPUT' }}
-          </p>
-          <pre class="whitespace-pre-wrap font-mono">{{ event.output }}</pre>
-        </div>
-      </div>
-    </div>
-
-    <div v-for="event in mcpEvents" :key="event.id" class="rounded-lg border p-3 text-xs">
-      <div
-        class="-m-1 mb-2 flex cursor-pointer items-center justify-between rounded p-1 transition-colors hover:bg-muted/50"
-        @click="toggleToolEvent(event.id)"
-      >
-        <span class="flex items-center gap-2 font-semibold">
-          <ChevronDown v-if="expandedToolEvents[event.id]" class="h-4 w-4 opacity-50" />
-          <ChevronRight v-else class="h-4 w-4 opacity-50" />
-          <Loader2 v-if="event.status === 'running'" class="h-3 w-3 animate-spin" />
-          <CheckCircle2 v-else-if="event.status === 'done'" class="h-3 w-3 text-emerald-500" />
-          <AlertCircle v-else class="h-3 w-3 text-destructive" />
-          MCP: {{ event.name }}
-        </span>
-        <span class="text-[10px] uppercase opacity-50">{{ event.status }}</span>
-      </div>
-      <div v-show="expandedToolEvents[event.id]">
-        <div v-if="event.input" class="mb-2 overflow-x-auto rounded bg-muted/30 p-2">
-          <p class="mb-1 text-[9px] font-bold opacity-50">INPUT</p>
-          <pre class="whitespace-pre-wrap font-mono">{{ event.input }}</pre>
-        </div>
-        <div v-if="event.output" :class="['overflow-x-auto rounded p-2', event.status === 'error' ? 'bg-destructive/10' : 'bg-emerald-50/30']">
-          <p :class="['mb-1 text-[9px] font-bold', event.status === 'error' ? 'text-destructive/70' : 'text-emerald-600/50']">
-            {{ event.status === 'error' ? 'ERROR' : 'OUTPUT' }}
-          </p>
-          <pre class="whitespace-pre-wrap font-mono">{{ event.output }}</pre>
         </div>
       </div>
     </div>
