@@ -22,6 +22,7 @@ from langchain_core.messages import (
 from langgraph.graph import END, START, StateGraph
 from sqlalchemy import select
 
+from server.agent import token_usage
 from server.agent.context import SessionContext
 from server.agent.tool_call_ids import (
     ToolCallIdMiddleware,
@@ -132,7 +133,6 @@ def _stream_text_segments(value: Any) -> list[tuple[str, str]]:
     return []
 
 
-_TOKEN_USAGE_KEYS = ("input_tokens", "output_tokens", "cached_input_tokens")
 _GRAPH_NODES = [
     {
         "id": "persist_input",
@@ -170,196 +170,6 @@ _GRAPH_EDGES = [
 ]
 
 
-def _usage_value(data: Any, key: str) -> Any:
-    if isinstance(data, dict):
-        return data.get(key)
-    return getattr(data, key, None)
-
-
-def _token_count(value: Any) -> int:
-    if isinstance(value, bool):
-        return 0
-    if isinstance(value, int):
-        return max(value, 0)
-    if isinstance(value, float):
-        return max(int(value), 0)
-    if isinstance(value, str):
-        try:
-            return max(int(value), 0)
-        except ValueError:
-            return 0
-    return 0
-
-
-def _first_token_count(data: Any, *keys: str) -> int:
-    for key in keys:
-        count = _token_count(_usage_value(data, key))
-        if count:
-            return count
-    return 0
-
-
-def _nested_token_count(data: Any, *path: str) -> int:
-    current = data
-    for key in path:
-        current = _usage_value(current, key)
-        if current is None:
-            return 0
-    return _token_count(current)
-
-
-def _empty_token_usage() -> dict[str, int]:
-    return {key: 0 for key in _TOKEN_USAGE_KEYS}
-
-
-def _has_token_usage(usage: dict[str, int]) -> bool:
-    return any(usage.get(key, 0) > 0 for key in _TOKEN_USAGE_KEYS)
-
-
-def _add_token_usage(*usages: dict[str, int]) -> dict[str, int]:
-    total = _empty_token_usage()
-    for usage in usages:
-        for key in _TOKEN_USAGE_KEYS:
-            total[key] += usage.get(key, 0)
-    return total
-
-
-def _subtract_token_usage(
-    usage: dict[str, int], subtract: dict[str, int]
-) -> dict[str, int]:
-    return {
-        key: max((usage.get(key, 0) or 0) - (subtract.get(key, 0) or 0), 0)
-        for key in _TOKEN_USAGE_KEYS
-    }
-
-
-def _normalize_token_usage(usage: Any) -> dict[str, int]:
-    """Normalize token usage metadata from LangChain and provider-specific APIs."""
-    normalized = _empty_token_usage()
-    if not usage:
-        return normalized
-
-    input_tokens = _first_token_count(usage, "input_tokens", "prompt_tokens")
-    output_tokens = _first_token_count(usage, "output_tokens", "completion_tokens")
-
-    prompt_cache_hit_tokens = _first_token_count(
-        usage, "prompt_cache_hit_tokens", "cache_read_input_tokens"
-    )
-    prompt_cache_miss_tokens = _first_token_count(usage, "prompt_cache_miss_tokens")
-    if not input_tokens and (prompt_cache_hit_tokens or prompt_cache_miss_tokens):
-        input_tokens = prompt_cache_hit_tokens + prompt_cache_miss_tokens
-
-    total_tokens = _first_token_count(usage, "total_tokens")
-    if total_tokens:
-        if not input_tokens and output_tokens:
-            input_tokens = max(total_tokens - output_tokens, 0)
-        elif input_tokens and not output_tokens:
-            output_tokens = max(total_tokens - input_tokens, 0)
-
-    cached_input_tokens = _first_token_count(
-        usage,
-        "cached_input_tokens",
-        "cache_read_input_tokens",
-        "cache_read",
-        "cached_tokens",
-        "prompt_cache_hit_tokens",
-    )
-    if not cached_input_tokens:
-        cached_input_tokens = (
-            _nested_token_count(usage, "input_token_details", "cache_read")
-            or _nested_token_count(usage, "input_token_details", "cached_tokens")
-            or _nested_token_count(usage, "input_tokens_details", "cache_read")
-            or _nested_token_count(usage, "input_tokens_details", "cached_tokens")
-            or _nested_token_count(usage, "prompt_token_details", "cached_tokens")
-            or _nested_token_count(usage, "prompt_tokens_details", "cached_tokens")
-        )
-
-    normalized["input_tokens"] = input_tokens
-    normalized["output_tokens"] = output_tokens
-    normalized["cached_input_tokens"] = cached_input_tokens
-    return normalized
-
-
-def _best_token_usage(candidates: list[Any]) -> dict[str, int]:
-    best = _empty_token_usage()
-    best_total = 0
-    for candidate in candidates:
-        usage = _normalize_token_usage(candidate)
-        total = sum(usage.values())
-        if total > best_total:
-            best = usage
-            best_total = total
-    return best
-
-
-def _metadata_usage_candidates(metadata: Any) -> list[Any]:
-    if not metadata:
-        return []
-    return [
-        _usage_value(metadata, "token_usage"),
-        _usage_value(metadata, "usage"),
-        _usage_value(metadata, "usage_metadata"),
-    ]
-
-
-def _message_token_usage(message: Any) -> dict[str, int]:
-    response_metadata = getattr(message, "response_metadata", None)
-    additional_kwargs = getattr(message, "additional_kwargs", None)
-    candidates = [
-        getattr(message, "usage_metadata", None),
-        *_metadata_usage_candidates(response_metadata),
-        *_metadata_usage_candidates(additional_kwargs),
-    ]
-    return _best_token_usage(candidates)
-
-
-def _llm_result_token_usage(response: Any) -> dict[str, int]:
-    if not response:
-        return _empty_token_usage()
-
-    llm_output = getattr(response, "llm_output", None)
-    top_level_usage = _best_token_usage(
-        [
-            _usage_value(llm_output, "token_usage"),
-            *_metadata_usage_candidates(_usage_value(llm_output, "metadata")),
-            _usage_value(llm_output, "usage"),
-            _usage_value(llm_output, "usage_metadata"),
-        ]
-    )
-
-    generation_usages = []
-    for generations in getattr(response, "generations", []) or []:
-        for generation in generations:
-            generation_usage = _best_token_usage(
-                [
-                    _message_token_usage(getattr(generation, "message", None)),
-                    *_metadata_usage_candidates(
-                        getattr(generation, "generation_info", None)
-                    ),
-                ]
-            )
-            if _has_token_usage(generation_usage):
-                generation_usages.append(generation_usage)
-
-    generation_usage = _add_token_usage(*generation_usages)
-    if not _has_token_usage(top_level_usage):
-        return generation_usage
-    if not _has_token_usage(generation_usage):
-        return top_level_usage
-    return {
-        key: max(top_level_usage.get(key, 0), generation_usage.get(key, 0))
-        for key in _TOKEN_USAGE_KEYS
-    }
-
-
-def _apply_token_usage(message: AgentMessage, usage: dict[str, int]) -> None:
-    if not _has_token_usage(usage):
-        return
-    message.input_tokens = usage["input_tokens"]
-    message.output_tokens = usage["output_tokens"]
-    message.cached_input_tokens = usage["cached_input_tokens"]
-
-
 class _StreamCallbackHandler(BaseCallbackHandler):
     def __init__(
         self,
@@ -374,7 +184,7 @@ class _StreamCallbackHandler(BaseCallbackHandler):
         self._tool_events: list[dict[str, Any]] = []
         self._mcp_events: list[dict[str, Any]] = []
         self._token_buffer: list[str] = []
-        self._usage: dict[str, int] = _empty_token_usage()
+        self._usage: dict[str, int] = token_usage.empty_token_usage()
 
     @property
     def tool_names(self) -> list[str]:
@@ -431,11 +241,11 @@ class _StreamCallbackHandler(BaseCallbackHandler):
         return "".join(self._token_buffer)
 
     def on_llm_end(self, response: Any, **kwargs: Any) -> None:
-        usage = _llm_result_token_usage(response)
-        if not _has_token_usage(usage):
+        usage = token_usage.llm_result_token_usage(response)
+        if not token_usage.has_token_usage(usage):
             return
 
-        self._usage = _add_token_usage(self._usage, usage)
+        self._usage = token_usage.add_token_usage(self._usage, usage)
 
     def on_tool_start(self, serialized: dict, input_str: str, **kwargs: Any) -> None:
         tool_name = serialized.get("name") or "tool"
@@ -1383,14 +1193,14 @@ class CustomAgent:
     ) -> str:
         assistant_text = ""
         message_usages = {
-            index: _message_token_usage(msg)
+            index: token_usage.message_token_usage(msg)
             for index, msg in enumerate(new_messages)
             if isinstance(msg, AIMessage)
         }
-        normalized_callback_usage = _normalize_token_usage(callback_usage)
-        residual_usage = _subtract_token_usage(
+        normalized_callback_usage = token_usage.normalize_token_usage(callback_usage)
+        residual_usage = token_usage.subtract_token_usage(
             normalized_callback_usage,
-            _add_token_usage(*message_usages.values()),
+            token_usage.add_token_usage(*message_usages.values()),
         )
         residual_applied = False
         placeholder_updated = False
@@ -1401,16 +1211,18 @@ class CustomAgent:
             for index, msg in enumerate(new_messages):
                 role = "user"
                 content = _extract_message_text(msg)
-                usage = _empty_token_usage()
+                usage = token_usage.empty_token_usage()
 
                 if isinstance(msg, AIMessage):
                     role = "assistant"
                     if not assistant_text and not msg.tool_calls:
                         assistant_text = content
 
-                    usage = message_usages.get(index, _empty_token_usage())
-                    if not residual_applied and _has_token_usage(residual_usage):
-                        usage = _add_token_usage(usage, residual_usage)
+                    usage = message_usages.get(index, token_usage.empty_token_usage())
+                    if not residual_applied and token_usage.has_token_usage(
+                        residual_usage
+                    ):
+                        usage = token_usage.add_token_usage(usage, residual_usage)
                         residual_applied = True
 
                     if not placeholder_updated:
@@ -1426,7 +1238,7 @@ class CustomAgent:
                                     trace_message = msg_to_update
                                 else:
                                     fallback_trace_message = msg_to_update
-                            _apply_token_usage(msg_to_update, usage)
+                            token_usage.apply_token_usage(msg_to_update, usage)
                             placeholder_updated = True
                             continue
 
@@ -1447,7 +1259,7 @@ class CustomAgent:
                 )
 
                 if isinstance(msg, AIMessage):
-                    _apply_token_usage(db_msg, usage)
+                    token_usage.apply_token_usage(db_msg, usage)
                     if run_metadata is not None:
                         if content and not msg.tool_calls:
                             trace_message = db_msg
@@ -1458,7 +1270,7 @@ class CustomAgent:
 
             if not placeholder_updated and (
                 callback_text
-                or _has_token_usage(normalized_callback_usage)
+                or token_usage.has_token_usage(normalized_callback_usage)
                 or run_metadata
             ):
                 msg_to_update = await db_session.get(AgentMessage, assistant_msg_id)
@@ -1467,7 +1279,9 @@ class CustomAgent:
                     msg_to_update.model = self.config.model
                     if run_metadata is not None:
                         trace_message = msg_to_update
-                    _apply_token_usage(msg_to_update, normalized_callback_usage)
+                    token_usage.apply_token_usage(
+                        msg_to_update, normalized_callback_usage
+                    )
 
             if run_metadata is not None:
                 target = trace_message or fallback_trace_message

@@ -25,12 +25,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from server.agent.custom_agent import (
     AgentStreamEvent,
     CustomAgent,
-    _add_token_usage,
-    _llm_result_token_usage,
-    _message_token_usage,
-    _normalize_token_usage,
     _stream_text_segments,
-    _subtract_token_usage,
     attach_trace_metadata_fallback,
     normalize_trace_metadata,
 )
