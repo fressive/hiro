@@ -3,13 +3,14 @@
 from typing import Any
 
 from deepagents import create_deep_agent
-from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
+from deepagents.backends import CompositeBackend, FilesystemBackend
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import BaseMessage, HumanMessage
 
 from server.agent.events.streaming import StreamCallbackHandler
 from server.agent.runtime.context import SessionContext
+from server.agent.runtime.sandboxed_backend import SessionSandboxedBackend
 from server.agent.tools import agent_tools
 from server.agent.utils.tool_call_ids import ToolCallIdMiddleware
 from server.core.util import get_data_path
@@ -17,6 +18,49 @@ from server.models.llm import LLMConfig
 from server.schemas.agent import AgentRunRequest
 
 SYSTEM_PROMPT = """"""
+INFORMATION_COLLECT_AGENT_NAME = "information_collect_agent"
+WRITEUP_AGENT_NAME = "writeup_agent"
+
+SPECIALIZED_SUBAGENT_DESCRIPTIONS = [
+    {
+        "name": INFORMATION_COLLECT_AGENT_NAME,
+        "description": (
+            "Use proactively for target information collection, reconnaissance "
+            "briefs, scope extraction, URL/host discovery, and collection plans "
+            "before deeper penetration-testing work."
+        ),
+    },
+    {
+        "name": WRITEUP_AGENT_NAME,
+        "description": (
+            "Use for writeups, reports, summaries, and final Markdown reporting "
+            "from prior conversation, tool output, evidence, and artifacts."
+        ),
+    },
+]
+SUBAGENT_DELEGATION_PROMPT = """## Workflow Subagent Delegation
+
+The main agent is one node in a larger execution graph. The graph owns
+specialized workflow subagents and invokes them through graph routing, not
+through the main agent's `task` tool.
+
+Workflow-managed specialized subagents:
+{subagent_descriptions}
+
+Delegation rules:
+- For writeups, reports, summaries, or final Markdown reporting, do not draft
+  the report directly in the main agent. Preserve the relevant evidence and let
+  the workflow route to `writeup_agent`.
+- For target information collection, reconnaissance briefs, scope extraction,
+  URL/host discovery, or collection planning, do not perform that collection
+  directly in the main agent. Preserve the request context and let the workflow
+  route to `information_collect_agent`.
+- Do not call the `task` tool with `writeup_agent` or
+  `information_collect_agent`; those are graph nodes, not inner DeepAgent task
+  subagents.
+- Use the main agent only to coordinate, verify, gather evidence, and present
+  results that are not owned by a specialized workflow subagent."""
+
 
 class AgentRuntime:
     """Build models, prompts, tools, and execution backends for one run.
@@ -61,6 +105,20 @@ class AgentRuntime:
             )
         return full_system_prompt
 
+    def build_main_agent_prompt(self, full_system_prompt: str) -> str:
+        """Append project-specific subagent delegation rules for DeepAgent."""
+
+        descriptions = "\n".join(
+            f"- `{item['name']}`: {item['description']}"
+            for item in SPECIALIZED_SUBAGENT_DESCRIPTIONS
+        )
+        section = SUBAGENT_DELEGATION_PROMPT.format(
+            subagent_descriptions=descriptions,
+        )
+        if not full_system_prompt.strip():
+            return section
+        return f"{full_system_prompt}\n\n{section}"
+
     async def execute(
         self,
         *,
@@ -77,21 +135,16 @@ class AgentRuntime:
         # DeepAgent manages tool calls, subagents, and filesystem state. The
         # surrounding graph still handles persistence and final message tags.
         skills_sources = ["./skills"]
+        main_system_prompt = self.build_main_agent_prompt(full_system_prompt)
         agent = create_deep_agent(
             llm,
             tools=current_tools,
             context_schema=SessionContext,
             backend=self.build_backend(),
             skills=skills_sources,
-            system_prompt=full_system_prompt,
+            system_prompt=main_system_prompt,
             middleware=[ToolCallIdMiddleware()],
-            subagents=[
-                {
-                    **GENERAL_PURPOSE_SUBAGENT,
-                    "skills": skills_sources,
-                    "middleware": [ToolCallIdMiddleware()],
-                }
-            ],
+            subagents=self.build_subagents(skills_sources),
         )
         result_state = await agent.ainvoke(
             {"messages": history_messages + [HumanMessage(content=self.input_text)]},
@@ -99,6 +152,17 @@ class AgentRuntime:
             context=SessionContext(self.session_id),
         )
         return result_state.get("messages", [])
+
+    def build_subagents(self, skills_sources: list[str]) -> list[dict[str, Any]]:
+        """Return inner DeepAgent task subagents exposed to the main agent."""
+
+        return [
+            {
+                **GENERAL_PURPOSE_SUBAGENT,
+                "skills": skills_sources,
+                "middleware": [ToolCallIdMiddleware()],
+            },
+        ]
 
     def build_llm(self, agent_name: str | None = None) -> Any:
         """Create a LangChain chat model for the requested graph agent."""
@@ -126,14 +190,17 @@ class AgentRuntime:
             elif provider == "anthropic":
                 model_kwargs["betas"] = ["context-1m-2025-08-07"]
 
+        streaming_enabled = self.should_stream_llm(provider=provider, base_url=base_url)
         init_kwargs: dict[str, Any] = {
             "model": config.model,
             "model_provider": provider,
             "api_key": config.api_key,
             "base_url": base_url,
-            "streaming": True,
+            "streaming": streaming_enabled,
             "max_retries": 5,
         }
+        if not streaming_enabled:
+            init_kwargs["disable_streaming"] = True
 
         if self.payload.temperature is not None:
             init_kwargs["temperature"] = self.payload.temperature
@@ -141,6 +208,14 @@ class AgentRuntime:
             init_kwargs["max_tokens"] = self.payload.max_tokens
 
         return init_chat_model(**init_kwargs, **model_kwargs)
+
+    def should_stream_llm(self, *, provider: str, base_url: str | None) -> bool:
+        """Return whether runtime model calls should use streaming transport."""
+
+        # Several OpenAI-compatible gateways pass non-streaming pings but close
+        # streamed responses before the first payload. Native OpenAI and
+        # Anthropic keep streaming enabled for live token updates.
+        return not (provider == "openai" and bool(base_url))
 
     def agent_config(self, agent_name: str | None) -> LLMConfig:
         """Return the per-agent model config, falling back to session default."""
@@ -166,7 +241,7 @@ class AgentRuntime:
 
         data_path = get_data_path(self.session_id)
         return CompositeBackend(
-            default=StateBackend(),
+            default=SessionSandboxedBackend(self.session_id),
             routes={
                 f"{str(data_path.absolute())}/": FilesystemBackend(
                     data_path,
