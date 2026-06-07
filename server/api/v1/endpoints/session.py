@@ -26,6 +26,8 @@ from server.agent.custom_agent import CustomAgent
 from server.agent.events.session_events import SessionEventHub
 from server.agent.events.streaming import AgentStreamEvent
 from server.agent.trace.execution_trace import (
+    GRAPH_EDGES,
+    GRAPH_NODES,
     attach_trace_metadata_fallback,
     normalize_trace_metadata,
 )
@@ -44,6 +46,7 @@ from server.schemas.agent import (
     AgentSessionTemplateUpdate,
     AgentSessionTemplateResponse,
     AgentMessageResponse,
+    AgentGraphResponse,
     ToolResponse,
     SessionFileResponse,
 )
@@ -182,10 +185,12 @@ async def _start_agent_run(
     active_session.enable_rag = payload.enable_rag
     active_session.tools = payload.tools
     active_session.mcp_servers = payload.mcp_servers
+    active_session.agent_configs = payload.agent_configs
     
     # Explicitly flag JSON fields as modified to ensure SQLAlchemy persists them
     flag_modified(active_session, "tools")
     flag_modified(active_session, "mcp_servers")
+    flag_modified(active_session, "agent_configs")
     
     await session.commit()
     await session.refresh(active_session)
@@ -199,12 +204,14 @@ async def _start_agent_run(
     config = result.scalars().first()
     if not config:
         raise HTTPException(status_code=404, detail="LLM config not found")
+    agent_llm_configs = await _load_agent_llm_configs(payload.agent_configs, session)
 
     custom_agent = CustomAgent(
         session_id=active_session_id,
         session_title=active_session.title,
         payload=payload,
         config=config,
+        agent_configs=agent_llm_configs,
     )
 
     hub = _get_session_hub(active_session_id)
@@ -225,6 +232,42 @@ async def _start_agent_run(
     await hub.publish_status(is_running=True)
     asyncio.create_task(_bridge_agent_events(active_session_id, source_queue, hub))
     return active_session
+
+
+async def _load_agent_llm_configs(
+    agent_configs: dict[str, int | None] | None,
+    session: AsyncSession,
+) -> dict[str, LLMConfig]:
+    if not agent_configs:
+        return {}
+
+    config_ids = {
+        config_id
+        for config_id in agent_configs.values()
+        if isinstance(config_id, int)
+    }
+    if not config_ids:
+        return {}
+
+    result = await session.execute(
+        select(LLMConfig).where(LLMConfig.id.in_(config_ids))
+    )
+    configs_by_id = {
+        config.id: config
+        for config in result.scalars().all()
+    }
+    missing_ids = sorted(config_ids - set(configs_by_id))
+    if missing_ids:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Agent LLM config not found: {missing_ids[0]}",
+        )
+
+    return {
+        agent_name: configs_by_id[config_id]
+        for agent_name, config_id in agent_configs.items()
+        if isinstance(config_id, int)
+    }
 
 
 async def _stop_agent_run(session_id: int) -> bool:
@@ -361,6 +404,15 @@ async def list_tools():
     ]
 
 
+@router.get("/graph", response_model=AgentGraphResponse)
+async def get_agent_graph():
+    """Return the backend execution graph metadata."""
+    return AgentGraphResponse(
+        nodes=GRAPH_NODES,
+        edges=GRAPH_EDGES,
+    )
+
+
 @router.get("/sessions/{session_id}/status")
 async def get_session_status(session_id: int):
     """Check if an agent is currently running for this session."""
@@ -427,7 +479,7 @@ async def update_session_template(
 
     for key, value in update_data.items():
         setattr(template, key, value)
-        if key in {"tools", "mcp_servers"}:
+        if key in {"tools", "mcp_servers", "agent_configs"}:
             flag_modified(template, key)
 
     template.updated_at = datetime.now(timezone.utc)
@@ -498,7 +550,7 @@ async def update_session(
 
     for key, value in update_data.items():
         setattr(db_session, key, value)
-        if key in ["tools", "mcp_servers"]:
+        if key in ["tools", "mcp_servers", "agent_configs"]:
             flag_modified(db_session, key)
 
     db_session.updated_at = datetime.now(timezone.utc)

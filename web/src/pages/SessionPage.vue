@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Square, Loader2, Trash2, ChevronLeft, BarChart3, MessageSquare, Files, SlidersHorizontal, X, SendHorizontal, Pencil, Check, GripVertical } from '@lucide/vue'
+import { Square, Loader2, Trash2, ChevronLeft, BarChart3, MessageSquare, Files, SlidersHorizontal, X, SendHorizontal, Pencil, Check, GripVertical, Bot, ListFilter } from '@lucide/vue'
 import {
   DialogClose,
   DialogContent,
@@ -20,7 +20,19 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { apiFetch, getApiBaseUrl } from '@/lib/api'
 
-import type { LLMConfig, Tool, EventRecord, AgentSession, AgentSessionTemplate, MCPServer, AgentMessage, GraphEdgeRecord, GraphNodeRecord, GraphNodeStatus } from '@/types/agent'
+import type {
+  LLMConfig,
+  Tool,
+  EventRecord,
+  AgentSession,
+  AgentSessionTemplate,
+  MCPServer,
+  AgentMessage,
+  AgentGraph,
+  GraphEdgeRecord,
+  GraphNodeRecord,
+  GraphNodeStatus,
+} from '@/types/agent'
 import MessageItem from '@/components/agent/MessageItem.vue'
 import AgentSettings from '@/components/agent/AgentSettings.vue'
 import ActiveResponse from '@/components/agent/ActiveResponse.vue'
@@ -47,6 +59,11 @@ const toolEvents = ref<EventRecord[]>([])
 const mcpEvents = ref<EventRecord[]>([])
 const graphNodes = ref<GraphNodeRecord[]>([])
 const graphEdges = ref<GraphEdgeRecord[]>([])
+const backendGraphNodes = ref<GraphNodeRecord[]>([])
+const backendGraphEdges = ref<GraphEdgeRecord[]>([])
+const agentConfigs = ref<Record<string, number | null>>({})
+const selectedGraphAgentName = ref<string | null>(null)
+const activeAgentFilter = ref<string | null>(null)
 const ragSources = ref<string[]>([])
 const sessions = ref<AgentSession[]>([])
 const sessionTemplates = ref<AgentSessionTemplate[]>([])
@@ -126,6 +143,70 @@ const chartConfig = {
     label: 'Output Tokens',
     color: 'var(--vis-color-2)',
   },
+}
+
+const graphNodeStatuses = new Set<GraphNodeStatus>([
+  'pending',
+  'running',
+  'done',
+  'skipped',
+  'error',
+])
+
+const normalizeGraphNode = (
+  node: any,
+  fallbackStatus: GraphNodeStatus = 'pending',
+): GraphNodeRecord | null => {
+  if (!node?.id) return null
+  const status = graphNodeStatuses.has(node.status as GraphNodeStatus)
+    ? node.status as GraphNodeStatus
+    : fallbackStatus
+  return {
+    id: String(node.id),
+    label: node.label ? String(node.label) : String(node.id),
+    description: node.description ? String(node.description) : undefined,
+    status,
+    optional: Boolean(node.optional),
+    node_type: node.node_type ? String(node.node_type) : undefined,
+    agent_name: node.agent_name ? String(node.agent_name) : undefined,
+  }
+}
+
+const normalizeGraphEdge = (edge: any): GraphEdgeRecord | null => {
+  if (!edge?.from || !edge?.to) return null
+  return {
+    from: String(edge.from),
+    to: String(edge.to),
+    condition: edge.condition ? String(edge.condition) : undefined,
+  }
+}
+
+const normalizeGraphNodes = (nodes: any): GraphNodeRecord[] => {
+  if (!Array.isArray(nodes)) return []
+  return nodes.flatMap((node) => {
+    const normalized = normalizeGraphNode(node)
+    return normalized ? [normalized] : []
+  })
+}
+
+const normalizeGraphEdges = (edges: any): GraphEdgeRecord[] => {
+  if (!Array.isArray(edges)) return []
+  return edges.flatMap((edge) => {
+    const normalized = normalizeGraphEdge(edge)
+    return normalized ? [normalized] : []
+  })
+}
+
+const fetchAgentGraph = async () => {
+  try {
+    const response = await apiFetch('/api/v1/agent/graph')
+    if (!response.ok) return
+    const graph = await response.json() as Partial<AgentGraph>
+    backendGraphNodes.value = normalizeGraphNodes(graph.nodes)
+    backendGraphEdges.value = normalizeGraphEdges(graph.edges)
+  } catch (error) {
+    console.error('Failed to fetch agent graph:', error)
+  }
 }
 
 const fetchSessionStats = async () => {
@@ -305,14 +386,147 @@ const latestTraceGraphEdges = computed(() => {
   return []
 })
 
+const mergeGraphNodesWithBackendTemplate = (
+  sourceNodes: GraphNodeRecord[],
+  missingOptionalStatus: GraphNodeStatus = 'pending',
+) => {
+  if (backendGraphNodes.value.length === 0) return sourceNodes
+
+  const merged = backendGraphNodes.value.map((node) => ({
+    ...node,
+    status: node.optional ? missingOptionalStatus : node.status,
+  }))
+  const byId = new Map(merged.map((node, index) => [node.id, index]))
+
+  for (const sourceNode of sourceNodes) {
+    const index = byId.get(sourceNode.id)
+    if (index === undefined) {
+      byId.set(sourceNode.id, merged.length)
+      merged.push(sourceNode)
+      continue
+    }
+
+    const templateNode = merged[index]
+    merged[index] = {
+      ...templateNode,
+      ...sourceNode,
+      label: sourceNode.label || templateNode.label,
+      description: sourceNode.description ?? templateNode.description,
+      optional: sourceNode.optional ?? templateNode.optional,
+      node_type: sourceNode.node_type ?? templateNode.node_type,
+      agent_name: sourceNode.agent_name ?? templateNode.agent_name,
+    }
+  }
+
+  return merged
+}
+
+const mergeGraphEdgesWithBackendTemplate = (sourceEdges: GraphEdgeRecord[]) => {
+  if (backendGraphEdges.value.length === 0) return sourceEdges
+
+  const merged = [...backendGraphEdges.value]
+  const seen = new Set(
+    merged.map((edge) => `${edge.from}->${edge.to}:${edge.condition || ''}`),
+  )
+  for (const edge of sourceEdges) {
+    const key = `${edge.from}->${edge.to}:${edge.condition || ''}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    merged.push(edge)
+  }
+  return merged
+}
+
 const visibleGraphNodes = computed(() => {
-  if (graphNodes.value.length > 0 || isRunning.value) return graphNodes.value
-  return latestTraceGraphNodes.value
+  if (graphNodes.value.length > 0) {
+    return mergeGraphNodesWithBackendTemplate(graphNodes.value)
+  }
+  if (!isRunning.value && latestTraceGraphNodes.value.length > 0) {
+    return mergeGraphNodesWithBackendTemplate(latestTraceGraphNodes.value, 'skipped')
+  }
+  return backendGraphNodes.value
 })
 
 const visibleGraphEdges = computed(() => {
-  if (graphNodes.value.length > 0 || isRunning.value) return graphEdges.value
-  return latestTraceGraphEdges.value
+  if (graphNodes.value.length > 0) {
+    return mergeGraphEdgesWithBackendTemplate(graphEdges.value)
+  }
+  if (!isRunning.value && latestTraceGraphEdges.value.length > 0) {
+    return mergeGraphEdgesWithBackendTemplate(latestTraceGraphEdges.value)
+  }
+  return backendGraphEdges.value
+})
+
+const agentDisplayNames: Record<string, string> = {
+  information_collect_agent: 'Information Collect Agent',
+  main_agent: 'Main Agent',
+  writeup_agent: 'Writeup Agent',
+}
+
+const formatAgentName = (agentName: string) => (
+  agentDisplayNames[agentName] || agentName
+    .split('_')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+)
+
+const graphAgentNodes = computed(() => (
+  visibleGraphNodes.value.filter((node) => node.node_type === 'agent' && node.agent_name)
+))
+
+const selectedGraphAgentNode = computed(() => {
+  if (!selectedGraphAgentName.value) return null
+  return graphAgentNodes.value.find((node) => node.agent_name === selectedGraphAgentName.value) || null
+})
+
+const selectedGraphAgentModelId = computed({
+  get: () => (
+    selectedGraphAgentName.value
+      ? agentConfigs.value[selectedGraphAgentName.value] ?? ''
+      : ''
+  ),
+  set: (value: string | number | null) => {
+    if (!selectedGraphAgentName.value) return
+    const next = { ...agentConfigs.value }
+    if (value === '' || value === null) {
+      next[selectedGraphAgentName.value] = null
+    } else {
+      const normalized = Number(value)
+      next[selectedGraphAgentName.value] = Number.isFinite(normalized)
+        ? normalized
+        : null
+    }
+    agentConfigs.value = next
+  },
+})
+
+const selectedGraphAgentModelName = computed(() => {
+  const configId = selectedGraphAgentName.value
+    ? agentConfigs.value[selectedGraphAgentName.value]
+    : null
+  const config = configs.value.find((item) => item.id === configId)
+  if (config) return config.name || config.model
+  const fallback = configs.value.find((item) => item.id === selectedConfigId.value)
+  return fallback ? `Session default: ${fallback.name || fallback.model}` : 'Session default'
+})
+
+const handleGraphAgentSelect = (node: GraphNodeRecord) => {
+  if (node.node_type !== 'agent' || !node.agent_name) return
+  selectedGraphAgentName.value = node.agent_name
+  activeAgentFilter.value = node.agent_name
+}
+
+const clearAgentFilter = () => {
+  activeAgentFilter.value = null
+}
+
+const visibleDisplayMessages = computed(() => {
+  if (!activeAgentFilter.value) return displayMessages.value
+  return displayMessages.value.filter((message) => (
+    message.role === 'user'
+    || (message.role === 'assistant' && message.name === activeAgentFilter.value)
+  ))
 })
 
 const chatLayoutStyle = computed<Record<string, string>>(() => ({
@@ -577,6 +791,7 @@ const onSessionChange = (id: number | null) => {
       isDeepAgent.value = session.is_deep_agent ?? true
       selectedTools.value = session.tools || availableTools.value.map(t => t.name)
       selectedMcpServers.value = session.mcp_servers || []
+      agentConfigs.value = { ...(session.agent_configs || {}) }
       
       // Reset initial load flag after a short delay to let watchers settle
       setTimeout(() => { isInitialLoad = false }, 100)
@@ -590,6 +805,9 @@ const onSessionChange = (id: number | null) => {
   } else {
     localStorage.removeItem(selectedSessionStorageKey)
     messages.value = []
+    agentConfigs.value = {}
+    selectedGraphAgentName.value = null
+    activeAgentFilter.value = null
     clearOutput()
   }
 }
@@ -748,6 +966,7 @@ const saveSessionConfig = async () => {
         enable_rag: enableRag.value,
         tools: selectedTools.value,
         mcp_servers: selectedMcpServers.value,
+        agent_configs: agentConfigs.value,
       }),
     })
     // Also update the local sessions array to keep it in sync
@@ -762,6 +981,7 @@ const saveSessionConfig = async () => {
       session.enable_rag = enableRag.value
       session.tools = selectedTools.value
       session.mcp_servers = selectedMcpServers.value
+      session.agent_configs = { ...agentConfigs.value }
     }
   } catch (error) {
     console.error('Failed to auto-save session config:', error)
@@ -785,6 +1005,7 @@ const currentSettingsPayload = (name?: string) => ({
   enable_rag: enableRag.value,
   tools: [...selectedTools.value],
   mcp_servers: [...selectedMcpServers.value],
+  agent_configs: { ...agentConfigs.value },
 })
 
 const saveCurrentSettingsAsTemplate = async (templateName: string) => {
@@ -843,6 +1064,7 @@ const applySessionTemplate = async (templateId: number) => {
   enableRag.value = !!template.enable_rag
   selectedTools.value = template.tools || []
   selectedMcpServers.value = template.mcp_servers || []
+  agentConfigs.value = { ...(template.agent_configs || {}) }
   await nextTick()
   await saveSessionConfig()
 }
@@ -891,6 +1113,7 @@ const startRun = async () => {
         enable_rag: enableRag.value,
         tools: selectedTools.value,
         mcp_servers: selectedMcpServers.value,
+        agent_configs: agentConfigs.value,
       },
     })
   } catch (error: any) {
@@ -953,14 +1176,19 @@ const upsertGraphNode = (incoming: Partial<GraphNodeRecord> & { id: string, stat
       label: incoming.label || existing.label,
       description: incoming.description ?? existing.description,
       optional: incoming.optional ?? existing.optional,
+      node_type: incoming.node_type ?? existing.node_type,
+      agent_name: incoming.agent_name ?? existing.agent_name,
     }
   } else {
+    const template = backendGraphNodes.value.find((node) => node.id === incoming.id)
     graphNodes.value.push({
       id: incoming.id,
-      label: incoming.label || incoming.id,
-      description: incoming.description,
+      label: incoming.label || template?.label || incoming.id,
+      description: incoming.description ?? template?.description,
       status: incoming.status || 'pending',
-      optional: incoming.optional,
+      optional: incoming.optional ?? template?.optional,
+      node_type: incoming.node_type ?? template?.node_type,
+      agent_name: incoming.agent_name ?? template?.agent_name,
     })
   }
 }
@@ -1006,22 +1234,8 @@ const applyEvent = (event: string, payload: any) => {
   }
 
   if (event === 'graph_init') {
-    if (Array.isArray(payload.nodes)) {
-      graphNodes.value = payload.nodes.map((node: any) => ({
-        id: node.id,
-        label: node.label || node.id,
-        description: node.description,
-        status: node.status || 'pending',
-        optional: node.optional,
-      }))
-    }
-    if (Array.isArray(payload.edges)) {
-      graphEdges.value = payload.edges.map((edge: any) => ({
-        from: edge.from,
-        to: edge.to,
-        condition: edge.condition,
-      }))
-    }
+    graphNodes.value = normalizeGraphNodes(payload.nodes)
+    graphEdges.value = normalizeGraphEdges(payload.edges)
     return
   }
 
@@ -1033,6 +1247,8 @@ const applyEvent = (event: string, payload: any) => {
         description: payload.description,
         status: payload.status || 'running',
         optional: payload.optional,
+        node_type: payload.node_type,
+        agent_name: payload.agent_name,
       })
     }
     return
@@ -1164,6 +1380,7 @@ onMounted(async () => {
     setGraphPanelWidth(savedGraphPanelWidth)
   }
 
+  await fetchAgentGraph()
   await fetchConfigs()
   await fetchTools()
   await fetchMcpServers()
@@ -1182,7 +1399,7 @@ onBeforeUnmount(() => {
 })
 
 watch(
-  () => [displayMessages.value.length, output.value, streamError.value, isRunning.value],
+  () => [visibleDisplayMessages.value.length, output.value, streamError.value, isRunning.value],
   scrollResponseToBottom,
   { immediate: true },
 )
@@ -1198,7 +1415,8 @@ watch(
     isDeepAgent, 
     enableRag, 
     selectedTools, 
-    selectedMcpServers
+    selectedMcpServers,
+    agentConfigs,
   ],
   () => {
     if (isInitialLoad) return
@@ -1339,6 +1557,8 @@ watch(
                 :graph-nodes="visibleGraphNodes"
                 :graph-edges="visibleGraphEdges"
                 :is-running="isRunning"
+                :selected-agent-name="selectedGraphAgentName"
+                @select-agent-node="handleGraphAgentSelect"
               />
 
               <div
@@ -1360,6 +1580,48 @@ watch(
               </div>
 
               <div class="flex min-h-0 flex-col overflow-hidden">
+                <div
+                  v-if="selectedGraphAgentNode"
+                  class="shrink-0 border-b bg-background/95 px-1 py-2"
+                >
+                  <div class="mx-auto flex max-w-4xl flex-wrap items-center gap-2">
+                    <div class="flex min-w-0 items-center gap-2 rounded-md border bg-muted/20 px-2.5 py-1.5 text-xs text-foreground">
+                      <Bot class="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      <span class="truncate">{{ formatAgentName(selectedGraphAgentNode.agent_name || '') }}</span>
+                    </div>
+                    <div class="ml-auto flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
+                      <div
+                        v-if="activeAgentFilter"
+                        class="flex items-center gap-1.5 rounded-md border border-primary/20 bg-primary/5 px-2 py-1 text-[11px] text-primary"
+                      >
+                        <ListFilter class="h-3 w-3 shrink-0" />
+                        <span class="truncate">{{ formatAgentName(activeAgentFilter) }}</span>
+                      </div>
+                      <select
+                        v-model="selectedGraphAgentModelId"
+                        class="h-8 min-w-[13rem] max-w-full rounded-md border border-input bg-background px-2 py-1 text-xs ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                        :disabled="configs.length === 0 || isRunning"
+                        :title="selectedGraphAgentModelName"
+                      >
+                        <option :value="''">Use session default</option>
+                        <option v-for="config in configs" :key="config.id" :value="config.id">
+                          {{ config.name }} · {{ config.model }}
+                        </option>
+                      </select>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        title="Clear agent filter"
+                        class="h-8 w-8 shrink-0"
+                        :disabled="!activeAgentFilter"
+                        @click="clearAgentFilter"
+                      >
+                        <X class="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                </div>
                 <div class="min-h-0 flex-1 overflow-hidden">
                   <div ref="responseScroll" class="h-full overflow-auto px-1">
                     <div class="mx-auto flex min-h-full max-w-4xl flex-col py-4">
@@ -1367,7 +1629,7 @@ watch(
                         <div v-if="messages.length === 0" class="text-sm text-muted-foreground">
                           No messages yet. Start a run to build history.
                         </div>
-                        <template v-for="message in displayMessages" :key="message.id">
+                        <template v-for="message in visibleDisplayMessages" :key="message.id">
                           <MessageItem
                             :message="message"
                             :is-expanded="expandedMessages[message.id]"

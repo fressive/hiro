@@ -24,6 +24,24 @@ const traceToolEvents = computed<EventRecord[]>(() => {
   ]
 })
 
+const agentDisplayNames: Record<string, string> = {
+  information_collect_agent: 'Information Collect Agent',
+  main_agent: 'Main Agent',
+  writeup_agent: 'Writeup Agent',
+}
+
+const messageAuthorLabel = computed(() => {
+  if (props.message.role === 'user') return 'You'
+  if (props.message.role !== 'assistant') return props.message.role
+  const name = props.message.name || ''
+  if (!name) return 'Assistant'
+  return agentDisplayNames[name] || name
+    .split('_')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+})
+
 const expandedTraceEvents = ref<Record<string, boolean>>({})
 
 const toggleTraceEvent = (id: string) => {
@@ -49,7 +67,15 @@ const toggleTraceEvent = (id: string) => {
           message.role === 'user' ? 'justify-end' : 'justify-between'
         ]"
       >
-        <span>{{ message.role === 'user' ? 'You' : 'Assistant' }}</span>
+        <span class="flex min-w-0 items-center gap-1.5">
+          <span class="truncate">{{ messageAuthorLabel }}</span>
+          <span
+            v-if="message.role === 'assistant' && message.name"
+            class="rounded border border-primary/15 bg-primary/10 px-1.5 py-0.5 text-[9px] font-normal text-primary"
+          >
+            Agent
+          </span>
+        </span>
         <div class="flex items-center gap-2">
           <span v-if="message.model" class="text-[9px] px-1 rounded bg-primary/10 text-primary border border-primary/20 font-medium">
             {{ message.model }}

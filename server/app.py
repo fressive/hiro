@@ -12,6 +12,7 @@ from server.core.config import settings
 from server.core.installation import is_application_installed
 from server.db import engine
 from server.db import Base
+from sqlalchemy import inspect, text
 
 
 logger = logging.getLogger(__name__)
@@ -50,8 +51,23 @@ def create_app() -> FastAPI:
         try:
             async with engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
+                await _ensure_agent_config_columns(conn)
         except Exception as exc:  # pragma: no cover - startup safety
             logger.warning("Database bootstrap failed during startup: %s", exc)
 
     return app
 
+
+async def _ensure_agent_config_columns(conn) -> None:
+    """Add lightweight JSON columns for existing installations."""
+
+    for table_name in ("agent_sessions", "agent_session_templates"):
+        columns = await conn.run_sync(
+            lambda sync_conn, table=table_name: {
+                column["name"] for column in inspect(sync_conn).get_columns(table)
+            }
+        )
+        if "agent_configs" not in columns:
+            await conn.execute(
+                text(f"ALTER TABLE {table_name} ADD COLUMN agent_configs JSON")
+            )

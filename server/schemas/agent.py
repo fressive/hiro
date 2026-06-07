@@ -1,9 +1,9 @@
 """Agent session schemas."""
 
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class AgentRunRequest(BaseModel):
@@ -20,6 +20,7 @@ class AgentRunRequest(BaseModel):
     enable_rag: Optional[bool] = False
     tools: Optional[List[str]] = None
     mcp_servers: Optional[List[str]] = None
+    agent_configs: Optional[Dict[str, Optional[int]]] = None
 
 
 class ToolResponse(BaseModel):
@@ -27,6 +28,33 @@ class ToolResponse(BaseModel):
 
     name: str
     description: str
+
+
+class AgentGraphNodeResponse(BaseModel):
+    """Execution graph node metadata."""
+
+    id: str
+    label: str
+    description: Optional[str] = None
+    status: Optional[str] = None
+    optional: Optional[bool] = None
+    node_type: Optional[str] = None
+    agent_name: Optional[str] = None
+
+
+class AgentGraphEdgeResponse(BaseModel):
+    """Execution graph edge metadata."""
+
+    from_: str = Field(alias="from")
+    to: str
+    condition: Optional[str] = None
+
+
+class AgentGraphResponse(BaseModel):
+    """Execution graph metadata response schema."""
+
+    nodes: List[AgentGraphNodeResponse]
+    edges: List[AgentGraphEdgeResponse]
 
 
 class AgentSessionCreate(BaseModel):
@@ -48,6 +76,7 @@ class AgentSessionUpdate(BaseModel):
     enable_rag: Optional[bool] = None
     tools: Optional[List[str]] = None
     mcp_servers: Optional[List[str]] = None
+    agent_configs: Optional[Dict[str, Optional[int]]] = None
 
 
 class AgentSessionResponse(BaseModel):
@@ -64,6 +93,7 @@ class AgentSessionResponse(BaseModel):
     enable_rag: Optional[bool] = False
     tools: Optional[List[str]] = None
     mcp_servers: Optional[List[str]] = None
+    agent_configs: Optional[Dict[str, Optional[int]]] = None
     created_at: datetime
     updated_at: datetime
 
@@ -84,6 +114,7 @@ class AgentSessionTemplateCreate(BaseModel):
     enable_rag: Optional[bool] = None
     tools: Optional[List[str]] = None
     mcp_servers: Optional[List[str]] = None
+    agent_configs: Optional[Dict[str, Optional[int]]] = None
 
 
 class AgentSessionTemplateUpdate(BaseModel):
@@ -99,6 +130,7 @@ class AgentSessionTemplateUpdate(BaseModel):
     enable_rag: Optional[bool] = None
     tools: Optional[List[str]] = None
     mcp_servers: Optional[List[str]] = None
+    agent_configs: Optional[Dict[str, Optional[int]]] = None
 
 
 class AgentSessionTemplateResponse(BaseModel):
@@ -115,6 +147,7 @@ class AgentSessionTemplateResponse(BaseModel):
     enable_rag: Optional[bool] = False
     tools: Optional[List[str]] = None
     mcp_servers: Optional[List[str]] = None
+    agent_configs: Optional[Dict[str, Optional[int]]] = None
     created_at: datetime
     updated_at: datetime
 

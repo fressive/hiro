@@ -19,15 +19,27 @@ GRAPH_NODES = [
         "description": "Load history, MCP tools, RAG context, and prompts.",
     },
     {
+        "id": "information_collect",
+        "label": "Information Collect",
+        "description": "Build a target information brief when requested.",
+        "optional": True,
+        "node_type": "agent",
+        "agent_name": "information_collect_agent",
+    },
+    {
         "id": "execute_agent",
         "label": "Execute Agent",
         "description": "Run the selected agent with tools and skills.",
+        "node_type": "agent",
+        "agent_name": "main_agent",
     },
     {
         "id": "writeup",
         "label": "Writeup",
         "description": "Generate a report from prior steps when requested.",
         "optional": True,
+        "node_type": "agent",
+        "agent_name": "writeup_agent",
     },
     {
         "id": "persist_output",
@@ -37,7 +49,13 @@ GRAPH_NODES = [
 ]
 GRAPH_EDGES = [
     {"from": "persist_input", "to": "prepare_context"},
-    {"from": "prepare_context", "to": "execute_agent"},
+    {
+        "from": "prepare_context",
+        "to": "information_collect",
+        "condition": "information collection requested",
+    },
+    {"from": "prepare_context", "to": "execute_agent", "condition": "default"},
+    {"from": "information_collect", "to": "execute_agent"},
     {"from": "execute_agent", "to": "writeup", "condition": "report requested"},
     {"from": "execute_agent", "to": "persist_output", "condition": "default"},
     {"from": "writeup", "to": "persist_output"},
@@ -51,6 +69,8 @@ def initial_graph_nodes() -> list[dict[str, Any]]:
             "label": node["label"],
             "description": node.get("description"),
             "optional": node.get("optional", False),
+            "node_type": node.get("node_type"),
+            "agent_name": node.get("agent_name"),
             "status": "pending",
         }
         for node in GRAPH_NODES
@@ -166,6 +186,8 @@ def fallback_graph_nodes(*, writeup_done: bool) -> list[dict[str, Any]]:
     nodes: list[dict[str, Any]] = []
     for node in GRAPH_NODES:
         status = "done"
+        if node["id"] == "information_collect":
+            status = "skipped"
         if node["id"] == "writeup" and not writeup_done:
             status = "skipped"
         nodes.append(
@@ -174,6 +196,8 @@ def fallback_graph_nodes(*, writeup_done: bool) -> list[dict[str, Any]]:
                 "label": node["label"],
                 "description": node.get("description"),
                 "optional": node.get("optional", False),
+                "node_type": node.get("node_type"),
+                "agent_name": node.get("agent_name"),
                 "status": status,
             }
         )

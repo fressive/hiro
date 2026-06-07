@@ -27,12 +27,19 @@ export type GraphNodeRecord = {
   description?: string
   status: GraphNodeStatus
   optional?: boolean
+  node_type?: 'agent' | string
+  agent_name?: string
 }
 
 export type GraphEdgeRecord = {
   from: string
   to: string
   condition?: string
+}
+
+export type AgentGraph = {
+  nodes: GraphNodeRecord[]
+  edges: GraphEdgeRecord[]
 }
 
 export type AgentSession = {
@@ -47,6 +54,7 @@ export type AgentSession = {
   enable_rag?: boolean | null
   tools?: string[] | null
   mcp_servers?: string[] | null
+  agent_configs?: Record<string, number | null> | null
   created_at: string
   updated_at: string
 }
@@ -63,6 +71,7 @@ export type AgentSessionTemplate = {
   enable_rag?: boolean | null
   tools?: string[] | null
   mcp_servers?: string[] | null
+  agent_configs?: Record<string, number | null> | null
   created_at: string
   updated_at: string
 }

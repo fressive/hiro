@@ -25,11 +25,13 @@ class AgentRuntime:
         input_text: str,
         payload: AgentRunRequest,
         config: LLMConfig,
+        agent_configs: dict[str, LLMConfig] | None = None,
     ) -> None:
         self.session_id = session_id
         self.input_text = input_text
         self.payload = payload
         self.config = config
+        self.agent_configs = agent_configs or {}
 
     def build_system_prompt(self, *, mcp_tools: list[Any], rag_context: str) -> str:
         full_system_prompt = self.payload.system_prompt or ""
@@ -54,7 +56,7 @@ class AgentRuntime:
         full_system_prompt: str,
         callback: StreamCallbackHandler,
     ) -> list[Any]:
-        llm = self.build_llm()
+        llm = self.build_llm("main_agent")
         current_tools = self.selected_builtin_tools() + mcp_tools
 
         if self.payload.is_deep_agent:
@@ -104,27 +106,28 @@ class AgentRuntime:
             + normalize_model_messages(result_messages)
         )
 
-    def build_llm(self) -> Any:
-        provider = self.config.provider.lower()
-        model_name = self.config.model.lower()
+    def build_llm(self, agent_name: str | None = None) -> Any:
+        config = self.agent_config(agent_name)
+        provider = config.provider.lower()
+        model_name = config.model.lower()
         if model_name.startswith("claude") or "anthropic" in model_name:
             provider = "anthropic"
 
-        base_url = self.config.base_url
+        base_url = config.base_url
         if provider == "anthropic" and base_url and base_url.endswith("/v1"):
             base_url = base_url.rsplit("/v1", 1)[0]
 
         model_kwargs: dict[str, Any] = {}
-        if self.config.enable_1m_context:
+        if config.enable_1m_context:
             if provider == "openai":
                 model_kwargs["enable_1m_context"] = True
             elif provider == "anthropic":
                 model_kwargs["betas"] = ["context-1m-2025-08-07"]
 
         init_kwargs: dict[str, Any] = {
-            "model": self.config.model,
+            "model": config.model,
             "model_provider": provider,
-            "api_key": self.config.api_key,
+            "api_key": config.api_key,
             "base_url": base_url,
             "streaming": True,
             "max_retries": 5,
@@ -136,6 +139,14 @@ class AgentRuntime:
             init_kwargs["max_tokens"] = self.payload.max_tokens
 
         return init_chat_model(**init_kwargs, **model_kwargs)
+
+    def agent_config(self, agent_name: str | None) -> LLMConfig:
+        if agent_name and agent_name in self.agent_configs:
+            return self.agent_configs[agent_name]
+        return self.config
+
+    def agent_model_name(self, agent_name: str) -> str:
+        return self.agent_config(agent_name).model
 
     def selected_builtin_tools(self) -> list[Any]:
         if self.payload.tools is None:

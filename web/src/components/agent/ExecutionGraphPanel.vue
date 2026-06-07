@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { RotateCcw, ZoomIn, ZoomOut } from '@lucide/vue'
+import { Bot, RotateCcw, ZoomIn, ZoomOut } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import type { GraphEdgeRecord, GraphNodeRecord, GraphNodeStatus } from '@/types/agent'
 
@@ -8,14 +8,19 @@ const props = defineProps<{
   graphNodes: GraphNodeRecord[]
   graphEdges: GraphEdgeRecord[]
   isRunning: boolean
+  selectedAgentName?: string | null
 }>()
 
-const GRAPH_WIDTH = 320
-const NODE_WIDTH = 120
-const NODE_HEIGHT = 58
+const emit = defineEmits<{
+  (e: 'select-agent-node', node: GraphNodeRecord): void
+}>()
+
+const GRAPH_WIDTH = 340
+const NODE_WIDTH = 156
+const NODE_HEIGHT = 62
 const TOP_PADDING = 44
 const BOTTOM_PADDING = 56
-const LAYER_GAP = 92
+const LAYER_GAP = 104
 const SIDE_PADDING = 82
 const GRAPH_CANVAS_TOP = 24
 const GRAPH_ZOOM_MIN = 0.7
@@ -91,6 +96,11 @@ const graphLayout = computed<LayoutNode[]>(() => {
     outgoing.get(edge.from)?.push(edge.to)
   }
 
+  const remainingIncoming = new Map<string, number>()
+  for (const node of nodes) {
+    remainingIncoming.set(node.id, (incoming.get(node.id) || []).length)
+  }
+
   const roots = nodes.filter((node) => (incoming.get(node.id) || []).length === 0)
   const queue = roots.length > 0 ? roots.map((node) => node.id) : [nodes[0].id]
   const depths = new Map<string, number>()
@@ -98,24 +108,28 @@ const graphLayout = computed<LayoutNode[]>(() => {
     depths.set(id, 0)
   }
 
+  const visited = new Set<string>()
   let cursor = 0
   while (cursor < queue.length) {
     const id = queue[cursor]
     cursor += 1
+    visited.add(id)
     const depth = depths.get(id) || 0
     for (const next of outgoing.get(id) || []) {
       const nextDepth = depth + 1
       const currentDepth = depths.get(next)
-      if (currentDepth === undefined || nextDepth < currentDepth) {
+      if (currentDepth === undefined || nextDepth > currentDepth) {
         depths.set(next, nextDepth)
-        queue.push(next)
       }
+      const nextRemaining = Math.max((remainingIncoming.get(next) || 0) - 1, 0)
+      remainingIncoming.set(next, nextRemaining)
+      if (nextRemaining === 0) queue.push(next)
     }
   }
 
-  let fallbackDepth = 0
+  let fallbackDepth = Math.max(0, ...depths.values())
   for (const node of nodes) {
-    if (!depths.has(node.id)) {
+    if (!visited.has(node.id)) {
       fallbackDepth += 1
       depths.set(node.id, fallbackDepth)
     }
@@ -254,6 +268,7 @@ const stopGraphPan = (event: PointerEvent) => {
 
 const edgePath = (source: LayoutNode, target: LayoutNode) => {
   const sameLayer = Math.abs(source.y - target.y) < 1
+  const depthGap = Math.abs(target.depth - source.depth)
 
   if (sameLayer) {
     const direction = source.x <= target.x ? 1 : -1
@@ -264,6 +279,19 @@ const edgePath = (source: LayoutNode, target: LayoutNode) => {
       path: `M ${sourceX} ${source.y} C ${sourceX + direction * 26} ${archY}, ${targetX - direction * 26} ${archY}, ${targetX} ${target.y}`,
       labelX: (sourceX + targetX) / 2,
       labelY: archY - 8,
+    }
+  }
+
+  if (depthGap > 1 && Math.abs(source.x - target.x) < 1) {
+    const sourceX = source.x + NODE_WIDTH / 2
+    const targetX = target.x + NODE_WIDTH / 2
+    const sourceY = source.y
+    const targetY = target.y
+    const bypassX = Math.min(GRAPH_WIDTH - 20, sourceX + 34)
+    return {
+      path: `M ${sourceX} ${sourceY} C ${bypassX} ${sourceY}, ${bypassX} ${targetY}, ${targetX} ${targetY}`,
+      labelX: bypassX,
+      labelY: (sourceY + targetY) / 2,
     }
   }
 
@@ -327,6 +355,24 @@ const graphStatusLabel = (status: GraphNodeStatus) => {
   return 'Pending'
 }
 
+const isAgentNode = (node: GraphNodeRecord) => node.node_type === 'agent'
+
+const isSelectedAgentNode = (node: GraphNodeRecord) => (
+  isAgentNode(node)
+  && Boolean(node.agent_name)
+  && node.agent_name === props.selectedAgentName
+)
+
+const handleNodePointerDown = (event: PointerEvent, node: GraphNodeRecord) => {
+  if (!isAgentNode(node)) return
+  event.stopPropagation()
+}
+
+const handleNodeClick = (node: GraphNodeRecord) => {
+  if (!isAgentNode(node)) return
+  emit('select-agent-node', node)
+}
+
 const truncateLabel = (value: string, maxLength = 18) => {
   if (value.length <= maxLength) return value
   return `${value.slice(0, maxLength - 3)}...`
@@ -337,9 +383,9 @@ const truncateLabel = (value: string, maxLength = 18) => {
   <aside class="flex min-h-0 flex-col rounded-lg border bg-muted/10">
     <div class="shrink-0 border-b px-4 py-3">
       <div class="flex items-center justify-between gap-3">
-        <p class="text-xs font-semibold text-muted-foreground">Execution</p>
+        <p class="text-xs text-muted-foreground">Execution</p>
         <div class="flex min-w-0 items-center gap-1">
-          <span class="mr-1 hidden truncate text-[10px] font-medium uppercase tracking-wide text-muted-foreground sm:inline">
+          <span class="mr-1 hidden truncate text-[10px] uppercase tracking-wide text-muted-foreground sm:inline">
             {{ panelStatus }}
           </span>
           <Button
@@ -353,7 +399,7 @@ const truncateLabel = (value: string, maxLength = 18) => {
           >
             <ZoomOut class="h-3.5 w-3.5" />
           </Button>
-          <span class="w-10 text-center text-[10px] font-medium tabular-nums text-muted-foreground">
+          <span class="w-10 text-center text-[10px] tabular-nums text-muted-foreground">
             {{ zoomPercent }}
           </span>
           <Button
@@ -444,47 +490,55 @@ const truncateLabel = (value: string, maxLength = 18) => {
                 stroke-linejoin="round"
                 stroke-width="2"
                 marker-end="url(#execution-graph-arrow)"
-              />
-            </g>
-
-            <g class="pointer-events-none">
-              <template v-for="edge in graphEdgeLayout" :key="`${edge.id}-label`">
-                <text
-                  v-if="edge.condition"
-                  :x="edge.labelX"
-                  :y="edge.labelY"
-                  class="fill-muted-foreground text-[9px] font-medium"
-                  dominant-baseline="middle"
-                  text-anchor="middle"
-                >
-                  {{ truncateLabel(edge.condition, 14) }}
-                </text>
-              </template>
+              >
+                <title>{{ edge.condition || `${edge.from} to ${edge.to}` }}</title>
+              </path>
             </g>
 
             <g
               v-for="node in graphLayout"
               :key="node.id"
-              :class="['transition-colors', graphNodeClass(node.status)]"
+              :class="[
+                'transition-colors',
+                graphNodeClass(node.status),
+                isAgentNode(node) && 'cursor-pointer',
+              ]"
               :transform="`translate(${node.x - NODE_WIDTH / 2} ${node.y - NODE_HEIGHT / 2})`"
+              @pointerdown="handleNodePointerDown($event, node)"
+              @click.stop="handleNodeClick(node)"
             >
-              <title>{{ node.description || node.label }}</title>
+              <title>{{ [node.description || node.label, isAgentNode(node) ? 'Agent node' : ''].filter(Boolean).join(' - ') }}</title>
               <rect
                 :width="NODE_WIDTH"
                 :height="NODE_HEIGHT"
                 rx="8"
-                stroke-width="1.5"
+                :stroke-width="isSelectedAgentNode(node) ? 2.5 : 1.5"
               />
+              <foreignObject
+                v-if="isAgentNode(node)"
+                :x="NODE_WIDTH - 28"
+                y="10"
+                width="18"
+                height="18"
+              >
+                <div
+                  xmlns="http://www.w3.org/1999/xhtml"
+                  class="flex h-[18px] w-[18px] items-center justify-center text-current opacity-80"
+                  aria-label="Agent node"
+                >
+                  <Bot class="h-3.5 w-3.5" />
+                </div>
+              </foreignObject>
               <circle
-                cx="14"
-                cy="16"
+                cx="16"
+                cy="18"
                 r="4"
                 :class="statusDotClass(node.status)"
               />
               <circle
                 v-if="node.status === 'running'"
-                cx="14"
-                cy="16"
+                cx="16"
+                cy="18"
                 r="7"
                 class="fill-transparent stroke-primary/30"
                 stroke-width="2"
@@ -503,16 +557,16 @@ const truncateLabel = (value: string, maxLength = 18) => {
                 />
               </circle>
               <text
-                x="25"
-                y="18"
-                class="fill-current text-[11px] font-semibold"
+                x="30"
+                y="20"
+                class="fill-current text-[11px]"
               >
-                {{ truncateLabel(node.label, 16) }}
+                {{ truncateLabel(node.label, isAgentNode(node) ? 17 : 20) }}
               </text>
               <text
-                x="25"
-                y="36"
-                class="fill-current text-[9px] opacity-70"
+                x="30"
+                y="39"
+                class="fill-current text-[9px] opacity-85"
               >
                 {{ graphStatusLabel(node.status) }}<template v-if="node.optional"> / Optional</template>
               </text>

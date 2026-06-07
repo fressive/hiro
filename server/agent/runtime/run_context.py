@@ -5,7 +5,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage
 
 from server.agent.events.streaming import AgentStreamEvent, StreamCallbackHandler
 from server.agent.trace.execution_trace import initial_graph_nodes
@@ -25,6 +25,8 @@ class AgentRunContext:
     full_system_prompt: str = ""
     all_messages: list[Any] = field(default_factory=list)
     assistant_text: str = ""
+    information_collect_message: AIMessage | None = None
+    information_collect_text: str = ""
     writeup_text: str = ""
     mcp_tools_loaded: bool = False
     graph_nodes: list[dict[str, Any]] = field(default_factory=initial_graph_nodes)

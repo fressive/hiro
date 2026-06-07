@@ -88,27 +88,46 @@ class McpToolRouter:
                 callbacks=callbacks,
             )
 
-        return [
-            StructuredTool.from_function(
-                coroutine=mcp_search,
-                name="mcp_search",
-                description=(
-                    "Search the enabled MCP servers for available tools. Use this "
-                    "when you need an external MCP capability or need the argument "
-                    "schema for a tool."
-                ),
-                args_schema=McpSearchInput,
+        search_tool = StructuredTool.from_function(
+            coroutine=mcp_search,
+            name="mcp_search",
+            description=(
+                "Search the enabled MCP servers for available tools. Use this "
+                "when you need an external MCP capability or need the argument "
+                "schema for a tool."
             ),
-            StructuredTool.from_function(
-                coroutine=mcp_call,
-                name="mcp_call",
-                description=(
-                    "Call an MCP tool returned by mcp_search. Pass tool_name exactly "
-                    "as returned and provide arguments as a JSON object."
-                ),
-                args_schema=McpCallInput,
+            args_schema=McpSearchInput,
+        )
+        call_tool = StructuredTool.from_function(
+            coroutine=mcp_call,
+            name="mcp_call",
+            description=(
+                "Call an MCP tool returned by mcp_search. Pass tool_name exactly "
+                "as returned and provide arguments as a JSON object."
             ),
-        ]
+            args_schema=McpCallInput,
+        )
+        search_tool.handle_validation_error = lambda error: _mcp_error_result(
+            tool_name="mcp_search",
+            resolved_tool_name=None,
+            error=error,
+        )
+        call_tool.handle_validation_error = lambda error: _mcp_error_result(
+            tool_name="mcp_call",
+            resolved_tool_name=None,
+            error=error,
+        )
+        search_tool.handle_tool_error = lambda error: _mcp_error_result(
+            tool_name="mcp_search",
+            resolved_tool_name=None,
+            error=error,
+        )
+        call_tool.handle_tool_error = lambda error: _mcp_error_result(
+            tool_name="mcp_call",
+            resolved_tool_name=None,
+            error=error,
+        )
+        return [search_tool, call_tool]
 
     def search(
         self,
@@ -166,11 +185,27 @@ class McpToolRouter:
         arguments: dict[str, Any],
         callbacks: Any = None,
     ) -> str:
-        resolved_name = self._resolve_tool_name(tool_name)
-        tool = self._tools_by_name[resolved_name]
-        config = {"callbacks": callbacks} if callbacks is not None else None
-        result = await tool.ainvoke(arguments or {}, config=config)
-        return _trim_text(_serialize_result(result), _MAX_TOOL_OUTPUT_CHARS)
+        resolved_name: str | None = None
+        try:
+            resolved_name = self._resolve_tool_name(tool_name)
+            tool = self._tools_by_name[resolved_name]
+            config = {"callbacks": callbacks} if callbacks is not None else None
+            result = await tool.ainvoke(arguments or {}, config=config)
+            return _trim_text(_serialize_result(result), _MAX_TOOL_OUTPUT_CHARS)
+        except Exception as exc:
+            if isinstance(exc, ValueError):
+                logger.info("MCP tool call rejected: %s", _exception_message(exc))
+            else:
+                logger.warning(
+                    "MCP tool call failed: %s",
+                    _exception_message(exc),
+                    exc_info=True,
+                )
+            return _mcp_error_result(
+                tool_name=tool_name,
+                resolved_tool_name=resolved_name,
+                error=exc,
+            )
 
     def _build_tool_info(self, tool: BaseTool) -> dict[str, Any]:
         server, original_name = _tool_identity(tool)
@@ -389,6 +424,43 @@ def _serialize_result(result: Any) -> str:
         return json.dumps(result, ensure_ascii=False, default=str)
     except TypeError:
         return str(result)
+
+
+def _mcp_error_result(
+    *,
+    tool_name: str,
+    resolved_tool_name: str | None,
+    error: BaseException,
+) -> str:
+    payload = {
+        "ok": False,
+        "tool_name": tool_name,
+        "resolved_tool_name": resolved_tool_name,
+        "error": {
+            "type": error.__class__.__name__,
+            "message": _exception_message(error),
+        },
+        "hint": (
+            "The MCP tool call failed. You can call mcp_search for the exact "
+            "schema, correct the arguments, try another tool, or explain the "
+            "failure if it is not recoverable."
+        ),
+    }
+    return _trim_text(
+        json.dumps(payload, ensure_ascii=False, default=str),
+        _MAX_TOOL_OUTPUT_CHARS,
+    )
+
+
+def _exception_message(error: BaseException) -> str:
+    if isinstance(error, BaseExceptionGroup):
+        child_messages = [_exception_message(child) for child in error.exceptions]
+        detail = "; ".join(message for message in child_messages if message)
+        summary = str(error) or error.__class__.__name__
+        if detail and detail not in summary:
+            return f"{summary}: {detail}"
+        return summary
+    return str(error) or error.__class__.__name__
 
 
 def _trim_text(value: str, limit: int) -> str:

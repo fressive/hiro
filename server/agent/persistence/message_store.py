@@ -130,6 +130,7 @@ class AgentMessageStore:
                     AIMessage(
                         content=message.content,
                         tool_calls=message.tool_calls or [],
+                        name=message.name,
                     )
                 )
                 history_messages.append(ai_message)
@@ -227,6 +228,7 @@ class AgentMessageStore:
         callback_usage: Any,
         callback_text: str,
         run_metadata: dict[str, Any] | None = None,
+        agent_models: dict[str, str] | None = None,
     ) -> str:
         assistant_text = ""
         message_usages = {
@@ -252,7 +254,7 @@ class AgentMessageStore:
 
                 if isinstance(msg, AIMessage):
                     role = "assistant"
-                    if not assistant_text and not msg.tool_calls:
+                    if content and not msg.tool_calls:
                         assistant_text = content
 
                     usage = message_usages.get(index, token_usage.empty_token_usage())
@@ -268,8 +270,9 @@ class AgentMessageStore:
                         )
                         if msg_to_update:
                             msg_to_update.content = content
+                            msg_to_update.name = getattr(msg, "name", None)
                             msg_to_update.tool_calls = msg.tool_calls
-                            msg_to_update.model = self.model
+                            msg_to_update.model = self._message_model(msg, agent_models)
                             if run_metadata is not None:
                                 if content and not msg.tool_calls:
                                     trace_message = msg_to_update
@@ -291,7 +294,11 @@ class AgentMessageStore:
                     name=getattr(msg, "name", None),
                     tool_call_id=getattr(msg, "tool_call_id", None),
                     tool_calls=getattr(msg, "tool_calls", None),
-                    model=self.model if role == "assistant" else None,
+                    model=(
+                        self._message_model(msg, agent_models)
+                        if role == "assistant"
+                        else None
+                    ),
                     created_at=datetime.now(timezone.utc),
                 )
 
@@ -313,7 +320,9 @@ class AgentMessageStore:
                 msg_to_update = await db_session.get(AgentMessage, assistant_msg_id)
                 if msg_to_update:
                     msg_to_update.content = callback_text
-                    msg_to_update.model = self.model
+                    msg_to_update.model = (
+                        agent_models or {}
+                    ).get("main_agent", self.model)
                     if run_metadata is not None:
                         trace_message = msg_to_update
                     token_usage.apply_token_usage(
@@ -334,6 +343,16 @@ class AgentMessageStore:
             await db_session.commit()
 
         return assistant_text
+
+    def _message_model(
+        self,
+        message: Any,
+        agent_models: dict[str, str] | None,
+    ) -> str:
+        name = getattr(message, "name", None)
+        if name and agent_models and name in agent_models:
+            return agent_models[name]
+        return self.model
 
     async def write_error_message(
         self, exc: Exception, assistant_msg_id: int | None
