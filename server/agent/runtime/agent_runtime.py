@@ -18,6 +18,14 @@ from server.schemas.agent import AgentRunRequest
 
 
 class AgentRuntime:
+    """Build models, prompts, tools, and execution backends for one run.
+
+    This class deliberately does not own persistence, streaming queue lifetime,
+    or LangGraph routing. It is the execution adapter used by graph nodes when
+    they need an LLM, selected tools, the effective system prompt, or a
+    session-scoped filesystem backend.
+    """
+
     def __init__(
         self,
         *,
@@ -34,8 +42,12 @@ class AgentRuntime:
         self.agent_configs = agent_configs or {}
 
     def build_system_prompt(self, *, mcp_tools: list[Any], rag_context: str) -> str:
+        """Combine session prompt, MCP usage guidance, and RAG context."""
+
         full_system_prompt = self.payload.system_prompt or ""
         if mcp_tools:
+            # MCP tools are exposed through router tools, so the model needs
+            # explicit instructions instead of seeing every remote tool eagerly.
             full_system_prompt += (
                 "\n\nMCP access is lazy-loaded through two router tools: "
                 "use mcp_search to find available MCP tools and schemas, then "
@@ -56,10 +68,14 @@ class AgentRuntime:
         full_system_prompt: str,
         callback: StreamCallbackHandler,
     ) -> list[Any]:
+        """Run the main agent and return the complete message sequence."""
+
         llm = self.build_llm("main_agent")
         current_tools = self.selected_builtin_tools() + mcp_tools
 
         if self.payload.is_deep_agent:
+            # DeepAgent manages tool calls, subagents, and filesystem state. The
+            # surrounding graph still handles persistence and final message tags.
             skills_sources = ["./skills"]
             agent = create_deep_agent(
                 llm,
@@ -87,6 +103,9 @@ class AgentRuntime:
             )
             return result_state.get("messages", [])
 
+        # Non-deep mode is a direct chat-model invocation with optional tools.
+        # It returns the same shape as DeepAgent: prior history, user input, and
+        # normalized model responses.
         llm_messages: list[BaseMessage] = []
         if full_system_prompt:
             llm_messages.append(SystemMessage(content=full_system_prompt))
@@ -107,18 +126,26 @@ class AgentRuntime:
         )
 
     def build_llm(self, agent_name: str | None = None) -> Any:
+        """Create a LangChain chat model for the requested graph agent."""
+
         config = self.agent_config(agent_name)
         provider = config.provider.lower()
         model_name = config.model.lower()
+        # Claude-compatible configs may arrive with a generic provider name;
+        # LangChain needs the Anthropic provider to select the right client.
         if model_name.startswith("claude") or "anthropic" in model_name:
             provider = "anthropic"
 
         base_url = config.base_url
+        # Anthropic clients expect the base host, while many proxy configs are
+        # stored with an OpenAI-compatible /v1 suffix.
         if provider == "anthropic" and base_url and base_url.endswith("/v1"):
             base_url = base_url.rsplit("/v1", 1)[0]
 
         model_kwargs: dict[str, Any] = {}
         if config.enable_1m_context:
+            # 1M-context support is provider-specific and must be passed through
+            # the provider's native opt-in parameter.
             if provider == "openai":
                 model_kwargs["enable_1m_context"] = True
             elif provider == "anthropic":
@@ -141,19 +168,27 @@ class AgentRuntime:
         return init_chat_model(**init_kwargs, **model_kwargs)
 
     def agent_config(self, agent_name: str | None) -> LLMConfig:
+        """Return the per-agent model config, falling back to session default."""
+
         if agent_name and agent_name in self.agent_configs:
             return self.agent_configs[agent_name]
         return self.config
 
     def agent_model_name(self, agent_name: str) -> str:
+        """Return the resolved model name used for persisted message metadata."""
+
         return self.agent_config(agent_name).model
 
     def selected_builtin_tools(self) -> list[Any]:
+        """Return built-in tools enabled by the run payload."""
+
         if self.payload.tools is None:
             return []
         return [tool for tool in agent_tools if tool.name in self.payload.tools]
 
     def build_backend(self) -> CompositeBackend:
+        """Create the DeepAgent backend for session-local file operations."""
+
         data_path = get_data_path(self.session_id)
         return CompositeBackend(
             default=StateBackend(),
