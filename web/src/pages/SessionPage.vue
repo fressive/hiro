@@ -20,10 +20,11 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { apiFetch, getApiBaseUrl } from '@/lib/api'
 
-import type { LLMConfig, Tool, EventRecord, AgentSession, AgentSessionTemplate, MCPServer, AgentMessage, GraphNodeRecord, GraphNodeStatus } from '@/types/agent'
+import type { LLMConfig, Tool, EventRecord, AgentSession, AgentSessionTemplate, MCPServer, AgentMessage, GraphEdgeRecord, GraphNodeRecord, GraphNodeStatus } from '@/types/agent'
 import MessageItem from '@/components/agent/MessageItem.vue'
 import AgentSettings from '@/components/agent/AgentSettings.vue'
 import ActiveResponse from '@/components/agent/ActiveResponse.vue'
+import ExecutionGraphPanel from '@/components/agent/ExecutionGraphPanel.vue'
 import SessionList from '@/components/agent/SessionList.vue'
 import FileList from '@/components/agent/FileList.vue'
 import { LineChart } from '@/components/ui/chart'
@@ -45,6 +46,7 @@ const sessionSocket = ref<WebSocket | null>(null)
 const toolEvents = ref<EventRecord[]>([])
 const mcpEvents = ref<EventRecord[]>([])
 const graphNodes = ref<GraphNodeRecord[]>([])
+const graphEdges = ref<GraphEdgeRecord[]>([])
 const ragSources = ref<string[]>([])
 const sessions = ref<AgentSession[]>([])
 const sessionTemplates = ref<AgentSessionTemplate[]>([])
@@ -169,6 +171,7 @@ const hasTraceMetadata = (message: AgentMessage) => {
   const metadata = message.extra_metadata
   return Boolean(
     metadata?.graph_nodes?.length
+    || metadata?.graph_edges?.length
     || metadata?.tool_events?.length
     || metadata?.mcp_events?.length
   )
@@ -272,6 +275,36 @@ const displayMessages = computed(() => {
     content: draft,
     created_at: new Date().toISOString(),
   })
+})
+
+const latestTraceGraphNodes = computed(() => {
+  for (let index = messages.value.length - 1; index >= 0; index -= 1) {
+    const message = messages.value[index]
+    if (message.role !== 'assistant') continue
+    const graph = message.extra_metadata?.graph_nodes
+    if (graph?.length) return graph
+  }
+  return []
+})
+
+const latestTraceGraphEdges = computed(() => {
+  for (let index = messages.value.length - 1; index >= 0; index -= 1) {
+    const message = messages.value[index]
+    if (message.role !== 'assistant') continue
+    const edges = message.extra_metadata?.graph_edges
+    if (edges?.length) return edges
+  }
+  return []
+})
+
+const visibleGraphNodes = computed(() => {
+  if (graphNodes.value.length > 0 || isRunning.value) return graphNodes.value
+  return latestTraceGraphNodes.value
+})
+
+const visibleGraphEdges = computed(() => {
+  if (graphNodes.value.length > 0 || isRunning.value) return graphEdges.value
+  return latestTraceGraphEdges.value
 })
 
 const scrollResponseToBottom = async () => {
@@ -814,6 +847,7 @@ const clearLiveResponse = () => {
   toolEvents.value = []
   mcpEvents.value = []
   graphNodes.value = []
+  graphEdges.value = []
   ragSources.value = []
 }
 
@@ -896,6 +930,13 @@ const applyEvent = (event: string, payload: any) => {
         description: node.description,
         status: node.status || 'pending',
         optional: node.optional,
+      }))
+    }
+    if (Array.isArray(payload.edges)) {
+      graphEdges.value = payload.edges.map((edge: any) => ({
+        from: edge.from,
+        to: edge.to,
+        condition: edge.condition,
       }))
     }
     return
@@ -1186,7 +1227,7 @@ watch(
         </div>
       </header>
 
-      <main class="flex-1 p-4 space-y-4 overflow-hidden flex flex-col lg:p-5">
+      <main class="flex flex-1 flex-col overflow-hidden p-4 lg:p-5">
         <div v-if="!selectedSessionId" class="flex-1 overflow-auto">
           <SessionList 
             :sessions="sessions" 
@@ -1196,10 +1237,18 @@ watch(
             @rename-session="renameSession"
           />
         </div>
-        <div v-else class="relative grid h-full grid-cols-1 gap-4 overflow-hidden">
-            <div class="flex h-full min-h-0 flex-col gap-4 overflow-hidden">
-              <template v-if="innerTab === 'chat'">
-                <div class="flex-1 min-h-0 overflow-hidden">
+        <div v-else class="relative h-full min-h-0 overflow-hidden">
+          <template v-if="innerTab === 'chat'">
+            <div class="grid h-full min-h-0 grid-rows-[14rem_minmax(0,1fr)] gap-4 overflow-hidden lg:grid-cols-[18rem_minmax(0,1fr)] lg:grid-rows-1 xl:grid-cols-[20rem_minmax(0,1fr)]">
+              <ExecutionGraphPanel
+                class="min-h-0"
+                :graph-nodes="visibleGraphNodes"
+                :graph-edges="visibleGraphEdges"
+                :is-running="isRunning"
+              />
+
+              <div class="flex min-h-0 flex-col overflow-hidden">
+                <div class="min-h-0 flex-1 overflow-hidden">
                   <div ref="responseScroll" class="h-full overflow-auto px-1">
                     <div class="mx-auto flex min-h-full max-w-4xl flex-col py-4">
                       <div class="flex-1 space-y-6">
@@ -1214,7 +1263,6 @@ watch(
                           />
                         </template>
 
-                        <!-- Active Streaming Output -->
                         <ActiveResponse
                           :output="output"
                           :is-running="isRunning"
@@ -1222,7 +1270,6 @@ watch(
                           :rag-sources="ragSources"
                           :tool-events="toolEvents"
                           :mcp-events="mcpEvents"
-                          :graph-nodes="graphNodes"
                         />
                       </div>
                     </div>
@@ -1278,10 +1325,11 @@ watch(
                     </div>
                   </div>
                 </div>
-              </template>
+              </div>
+            </div>
+          </template>
 
-              <!-- Session Specific Stats -->
-              <div v-else-if="innerTab === 'stats'" class="flex-1 space-y-6 overflow-auto animate-in fade-in slide-in-from-bottom-2 duration-300 pr-2">
+          <div v-else-if="innerTab === 'stats'" class="h-full space-y-6 overflow-auto animate-in fade-in slide-in-from-bottom-2 duration-300 pr-2">
                 <div v-if="!currentSessionStats || currentSessionStats.rounds.length === 0" class="flex flex-col items-center justify-center h-full text-muted-foreground italic">
                   <BarChart3 class="h-12 w-12 mb-2 opacity-20" />
                   <p>No statistics available for this session yet.</p>
@@ -1381,12 +1429,9 @@ watch(
                 </template>
               </div>
 
-              <!-- Session Specific Files -->
-              <div v-else-if="innerTab === 'files' && selectedSessionId" class="flex-1 space-y-6 overflow-auto animate-in fade-in slide-in-from-bottom-2 duration-300 pr-2">
+          <div v-else-if="innerTab === 'files' && selectedSessionId" class="h-full space-y-6 overflow-auto animate-in fade-in slide-in-from-bottom-2 duration-300 pr-2">
                 <FileList :session-id="selectedSessionId" />
               </div>
-            </div>
-
             <Card
               v-if="innerTab === 'chat' && showSettings"
               class="absolute bottom-0 right-0 top-0 z-30 w-[min(24rem,calc(100vw-2rem))] min-h-0 gap-4 overflow-auto border shadow-2xl py-4 animate-in fade-in slide-in-from-right-2 duration-150"
