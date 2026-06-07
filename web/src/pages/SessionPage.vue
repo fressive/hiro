@@ -60,6 +60,10 @@ const expandedMessages = ref<Record<number, boolean>>({})
 const isTemplateDialogOpen = ref(false)
 const templateName = ref('')
 const templateError = ref('')
+const isDeleteSessionDialogOpen = ref(false)
+const pendingDeleteSessionId = ref<number | null>(null)
+const isDeletingSession = ref(false)
+const deleteSessionError = ref('')
 const isRenamingSelectedSession = ref(false)
 const selectedSessionTitleDraft = ref('')
 const selectedTitleInput = ref<HTMLInputElement | null>(null)
@@ -148,6 +152,18 @@ const selectedSession = computed(() => {
 })
 
 const selectedSessionTitle = computed(() => selectedSession.value?.title || 'Chat')
+
+const pendingDeleteSession = computed(() => {
+  if (!pendingDeleteSessionId.value) return null
+  return sessions.value.find((session) => session.id === pendingDeleteSessionId.value) || null
+})
+
+watch(isDeleteSessionDialogOpen, (open) => {
+  if (!open && !isDeletingSession.value) {
+    pendingDeleteSessionId.value = null
+    deleteSessionError.value = ''
+  }
+})
 
 const hasTraceMetadata = (message: AgentMessage) => {
   const metadata = message.extra_metadata
@@ -520,17 +536,43 @@ const submitSelectedSessionRename = async () => {
 const deleteSession = async (id?: number) => {
   const sessionId = id || selectedSessionId.value
   if (!sessionId) return
-  if (!confirm('Are you sure you want to delete this session?')) return
+  pendingDeleteSessionId.value = sessionId
+  deleteSessionError.value = ''
+  isDeleteSessionDialogOpen.value = true
+}
 
-  const response = await apiFetch(`/api/v1/agent/sessions/${sessionId}`, {
-    method: 'DELETE',
-  })
+const cancelDeleteSession = () => {
+  if (isDeletingSession.value) return
+  isDeleteSessionDialogOpen.value = false
+  pendingDeleteSessionId.value = null
+  deleteSessionError.value = ''
+}
 
-  if (response.ok) {
-    sessions.value = sessions.value.filter((s) => s.id !== sessionId)
-    if (sessionId === selectedSessionId.value) {
-      onSessionChange(null)
+const confirmDeleteSession = async () => {
+  const sessionId = pendingDeleteSessionId.value
+  if (!sessionId || isDeletingSession.value) return
+
+  isDeletingSession.value = true
+  deleteSessionError.value = ''
+  try {
+    const response = await apiFetch(`/api/v1/agent/sessions/${sessionId}`, {
+      method: 'DELETE',
+    })
+
+    if (response.ok) {
+      sessions.value = sessions.value.filter((s) => s.id !== sessionId)
+      if (sessionId === selectedSessionId.value) {
+        onSessionChange(null)
+      }
+      isDeleteSessionDialogOpen.value = false
+      pendingDeleteSessionId.value = null
+    } else {
+      deleteSessionError.value = 'Failed to delete session.'
     }
+  } catch {
+    deleteSessionError.value = 'Failed to delete session.'
+  } finally {
+    isDeletingSession.value = false
   }
 }
 
@@ -874,10 +916,14 @@ const applyEvent = (event: string, payload: any) => {
 
   if (event === 'session') {
     if (payload.id) {
-      selectedSessionId.value = payload.id
-      localStorage.setItem(selectedSessionStorageKey, String(payload.id))
+      const sessionId = Number(payload.id)
+      const isCurrentRunningSession = selectedSessionId.value === sessionId && isRunning.value
+      selectedSessionId.value = sessionId
+      localStorage.setItem(selectedSessionStorageKey, String(sessionId))
       fetchSessions()
-      fetchMessages(payload.id)
+      if (!isCurrentRunningSession) {
+        fetchMessages(sessionId)
+      }
     }
     return
   }
@@ -1036,8 +1082,8 @@ watch(
   <SidebarProvider>
     <AppSidebar />
     <SidebarInset class="flex h-screen flex-col overflow-hidden">
-      <header class="flex h-16 shrink-0 items-center gap-3 border-b px-4">
-        <div class="flex min-w-0 flex-1 items-center gap-2">
+      <header class="grid h-16 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 border-b px-4">
+        <div class="flex min-w-0 items-center gap-2">
           <SidebarTrigger class="-ml-1" />
           <Separator orientation="vertical" class="mr-2 h-4" />
           <Button
@@ -1096,36 +1142,36 @@ watch(
             </Button>
           </div>
         </div>
-        <div v-if="selectedSessionId" class="flex shrink-0 items-center gap-2">
-          <div class="flex items-center gap-1 rounded-lg bg-muted p-1">
-            <Button
-              variant="ghost"
-              size="sm"
-              :class="['gap-2', innerTab === 'chat' && 'bg-background shadow-sm']"
-              @click="innerTab = 'chat'"
-            >
-              <MessageSquare class="h-4 w-4" />
-              <span class="hidden sm:inline">Chat</span>
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              :class="['gap-2', innerTab === 'stats' && 'bg-background shadow-sm']"
-              @click="innerTab = 'stats'"
-            >
-              <BarChart3 class="h-4 w-4" />
-              <span class="hidden sm:inline">Stats</span>
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              :class="['gap-2', innerTab === 'files' && 'bg-background shadow-sm']"
-              @click="innerTab = 'files'"
-            >
-              <Files class="h-4 w-4" />
-              <span class="hidden sm:inline">Files</span>
-            </Button>
-          </div>
+        <div v-if="selectedSessionId" class="flex items-center gap-1 rounded-lg bg-muted p-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            :class="['gap-2', innerTab === 'chat' && 'bg-background shadow-sm']"
+            @click="innerTab = 'chat'"
+          >
+            <MessageSquare class="h-4 w-4" />
+            <span class="hidden sm:inline">Chat</span>
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            :class="['gap-2', innerTab === 'stats' && 'bg-background shadow-sm']"
+            @click="innerTab = 'stats'"
+          >
+            <BarChart3 class="h-4 w-4" />
+            <span class="hidden sm:inline">Stats</span>
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            :class="['gap-2', innerTab === 'files' && 'bg-background shadow-sm']"
+            @click="innerTab = 'files'"
+          >
+            <Files class="h-4 w-4" />
+            <span class="hidden sm:inline">Files</span>
+          </Button>
+        </div>
+        <div v-if="selectedSessionId" class="flex min-w-0 justify-end">
           <Button
             v-if="innerTab === 'chat'"
             type="button"
@@ -1389,6 +1435,44 @@ watch(
       </main>
 
     </SidebarInset>
+
+    <DialogRoot v-model:open="isDeleteSessionDialogOpen">
+      <DialogPortal>
+        <DialogOverlay class="fixed inset-0 z-50 bg-black/50 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+        <DialogContent class="fixed left-1/2 top-1/2 z-50 w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-background p-5 shadow-lg outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95">
+          <div class="space-y-4">
+            <div class="space-y-1.5">
+              <DialogTitle class="text-base font-semibold">Delete Session</DialogTitle>
+              <DialogDescription class="text-sm text-muted-foreground">
+                This will delete "{{ pendingDeleteSession?.title || 'Untitled Session' }}" and its files.
+              </DialogDescription>
+            </div>
+
+            <p v-if="deleteSessionError" class="text-xs text-destructive">{{ deleteSessionError }}</p>
+
+            <div class="flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                :disabled="isDeletingSession"
+                @click="cancelDeleteSession"
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                :disabled="isDeletingSession"
+                @click="confirmDeleteSession"
+              >
+                <Loader2 v-if="isDeletingSession" class="h-4 w-4 animate-spin" />
+                Delete
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </DialogPortal>
+    </DialogRoot>
 
     <DialogRoot v-model:open="isTemplateDialogOpen">
       <DialogPortal>
