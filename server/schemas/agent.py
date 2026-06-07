@@ -48,6 +48,7 @@ class AgentGraphEdgeResponse(BaseModel):
     from_: str = Field(alias="from")
     to: str
     condition: Optional[str] = None
+    bidirectional: Optional[bool] = None
 
 
 class AgentGraphResponse(BaseModel):

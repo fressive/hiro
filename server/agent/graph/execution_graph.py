@@ -83,6 +83,7 @@ class AgentExecutionGraph:
             {
                 "writeup": "writeup",
                 "persist_output": "persist_output",
+                "information_collect": "information_collect"
             },
         )
         graph.add_edge("writeup", "persist_output")

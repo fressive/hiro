@@ -178,6 +178,7 @@ const normalizeGraphEdge = (edge: any): GraphEdgeRecord | null => {
     from: String(edge.from),
     to: String(edge.to),
     condition: edge.condition ? String(edge.condition) : undefined,
+    bidirectional: edge.bidirectional === undefined ? undefined : Boolean(edge.bidirectional),
   }
 }
 

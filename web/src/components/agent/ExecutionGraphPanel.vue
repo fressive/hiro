@@ -15,13 +15,18 @@ const emit = defineEmits<{
   (e: 'select-agent-node', node: GraphNodeRecord): void
 }>()
 
-const GRAPH_WIDTH = 340
+const GRAPH_WIDTH = 360
 const NODE_WIDTH = 156
 const NODE_HEIGHT = 62
-const TOP_PADDING = 44
-const BOTTOM_PADDING = 56
-const LAYER_GAP = 104
-const SIDE_PADDING = 82
+const TOP_PADDING = 48
+const BOTTOM_PADDING = 60
+const LAYER_GAP = 112
+const SIDE_PADDING = 88
+const EDGE_SIDE_PADDING = 22
+const EDGE_SIDE_OFFSET = 58
+const EDGE_SIDE_ANCHOR_OFFSET = 14
+const EDGE_CURVE_RADIUS = 36
+const SAME_LAYER_ARCH_HEIGHT = 44
 const GRAPH_CANVAS_TOP = 24
 const GRAPH_ZOOM_MIN = 0.7
 const GRAPH_ZOOM_MAX = 1.8
@@ -66,6 +71,10 @@ const nodeMap = computed(() => {
   return new Map(props.graphNodes.map((node) => [node.id, node]))
 })
 
+const nodeOrder = computed(() => {
+  return new Map(props.graphNodes.map((node, index) => [node.id, index]))
+})
+
 const normalizedEdges = computed<GraphEdgeRecord[]>(() => {
   const knownNodes = nodeMap.value
   const edges = props.graphEdges.filter((edge) => (
@@ -80,6 +89,19 @@ const normalizedEdges = computed<GraphEdgeRecord[]>(() => {
   }))
 })
 
+const forwardEdges = computed<GraphEdgeRecord[]>(() => {
+  const order = nodeOrder.value
+  return normalizedEdges.value.filter((edge) => {
+    const sourceIndex = order.get(edge.from)
+    const targetIndex = order.get(edge.to)
+    return sourceIndex === undefined || targetIndex === undefined || sourceIndex < targetIndex
+  })
+})
+
+const clamp = (value: number, min: number, max: number) => {
+  return Math.min(Math.max(value, min), max)
+}
+
 const graphLayout = computed<LayoutNode[]>(() => {
   const nodes = props.graphNodes
   if (nodes.length === 0) return []
@@ -91,7 +113,7 @@ const graphLayout = computed<LayoutNode[]>(() => {
     outgoing.set(node.id, [])
   }
 
-  for (const edge of normalizedEdges.value) {
+  for (const edge of forwardEdges.value) {
     incoming.get(edge.to)?.push(edge.from)
     outgoing.get(edge.from)?.push(edge.to)
   }
@@ -268,28 +290,50 @@ const stopGraphPan = (event: PointerEvent) => {
 
 const edgePath = (source: LayoutNode, target: LayoutNode) => {
   const sameLayer = Math.abs(source.y - target.y) < 1
-  const depthGap = Math.abs(target.depth - source.depth)
+  const depthGap = target.depth - source.depth
 
   if (sameLayer) {
     const direction = source.x <= target.x ? 1 : -1
     const sourceX = source.x + direction * (NODE_WIDTH / 2)
     const targetX = target.x - direction * (NODE_WIDTH / 2)
-    const archY = source.y - 34
+    const horizontalDistance = Math.abs(targetX - sourceX)
+    const archHeight = Math.min(72, SAME_LAYER_ARCH_HEIGHT + horizontalDistance * 0.12)
+    const controlOffset = Math.min(42, Math.max(28, horizontalDistance * 0.35))
+    const archY = source.y - archHeight
     return {
-      path: `M ${sourceX} ${source.y} C ${sourceX + direction * 26} ${archY}, ${targetX - direction * 26} ${archY}, ${targetX} ${target.y}`,
+      path: `M ${sourceX} ${source.y} C ${sourceX + direction * controlOffset} ${archY}, ${targetX - direction * controlOffset} ${archY}, ${targetX} ${target.y}`,
       labelX: (sourceX + targetX) / 2,
       labelY: archY - 8,
     }
   }
 
-  if (depthGap > 1 && Math.abs(source.x - target.x) < 1) {
-    const sourceX = source.x + NODE_WIDTH / 2
-    const targetX = target.x + NODE_WIDTH / 2
-    const sourceY = source.y
-    const targetY = target.y
-    const bypassX = Math.min(GRAPH_WIDTH - 20, sourceX + 34)
+  if ((depthGap < 0 || depthGap > 1) && Math.abs(source.x - target.x) < 1) {
+    const direction = depthGap < 0
+      ? (source.x < GRAPH_WIDTH / 2 ? 1 : -1)
+      : (source.x > GRAPH_WIDTH / 2 ? -1 : 1)
+    const sourceX = source.x + direction * (NODE_WIDTH / 2)
+    const targetX = target.x + direction * (NODE_WIDTH / 2)
+    const verticalDirection = target.y >= source.y ? 1 : -1
+    const sourceY = source.y + verticalDirection * EDGE_SIDE_ANCHOR_OFFSET
+    const targetY = target.y - verticalDirection * EDGE_SIDE_ANCHOR_OFFSET
+    const verticalDistance = Math.abs(targetY - sourceY)
+    const radius = Math.min(EDGE_CURVE_RADIUS, Math.max(16, verticalDistance / 2.6))
+    const bypassX = clamp(
+      sourceX + direction * EDGE_SIDE_OFFSET,
+      EDGE_SIDE_PADDING,
+      GRAPH_WIDTH - EDGE_SIDE_PADDING,
+    )
+    const controlX = sourceX + direction * Math.min(EDGE_CURVE_RADIUS, Math.abs(bypassX - sourceX) * 0.75)
+    const targetControlX = targetX + direction * Math.min(EDGE_CURVE_RADIUS, Math.abs(bypassX - targetX) * 0.75)
+    const firstBendY = sourceY + verticalDirection * radius
+    const secondBendY = targetY - verticalDirection * radius
     return {
-      path: `M ${sourceX} ${sourceY} C ${bypassX} ${sourceY}, ${bypassX} ${targetY}, ${targetX} ${targetY}`,
+      path: [
+        `M ${sourceX} ${sourceY}`,
+        `C ${controlX} ${sourceY}, ${bypassX} ${sourceY}, ${bypassX} ${firstBendY}`,
+        `L ${bypassX} ${secondBendY}`,
+        `C ${bypassX} ${targetY}, ${targetControlX} ${targetY}, ${targetX} ${targetY}`,
+      ].join(' '),
       labelX: bypassX,
       labelY: (sourceY + targetY) / 2,
     }
@@ -299,9 +343,11 @@ const edgePath = (source: LayoutNode, target: LayoutNode) => {
   const sourceY = source.y + NODE_HEIGHT / 2
   const targetX = target.x
   const targetY = target.y - NODE_HEIGHT / 2
-  const controlY = sourceY + Math.max(28, (targetY - sourceY) / 2)
+  const verticalDistance = targetY - sourceY
+  const verticalDirection = verticalDistance >= 0 ? 1 : -1
+  const controlOffset = clamp(Math.abs(verticalDistance) * 0.45, 32, 64)
   return {
-    path: `M ${sourceX} ${sourceY} C ${sourceX} ${controlY}, ${targetX} ${controlY}, ${targetX} ${targetY}`,
+    path: `M ${sourceX} ${sourceY} C ${sourceX} ${sourceY + verticalDirection * controlOffset}, ${targetX} ${targetY - verticalDirection * controlOffset}, ${targetX} ${targetY}`,
     labelX: (sourceX + targetX) / 2,
     labelY: (sourceY + targetY) / 2 - 8,
   }
@@ -342,6 +388,7 @@ const graphEdgeClass = (edge: GraphEdgeRecord) => {
   const target = nodeMap.value.get(edge.to)
   if (source?.status === 'error' || target?.status === 'error') return 'stroke-destructive'
   if (target?.status === 'running') return 'stroke-primary'
+  if (source?.status === 'skipped' || target?.status === 'skipped') return 'stroke-muted-foreground/30'
   if (source?.status === 'done' && target?.status && target.status !== 'pending') return 'stroke-primary/70'
   if (source?.status === 'done') return 'stroke-primary/35'
   return 'stroke-muted-foreground/25'

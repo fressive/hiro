@@ -35,6 +35,7 @@ export type GraphEdgeRecord = {
   from: string
   to: string
   condition?: string
+  bidirectional?: boolean
 }
 
 export type AgentGraph = {

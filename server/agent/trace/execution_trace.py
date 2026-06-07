@@ -58,6 +58,7 @@ GRAPH_EDGES = [
     {"from": "information_collect", "to": "execute_agent"},
     {"from": "execute_agent", "to": "writeup", "condition": "report requested"},
     {"from": "execute_agent", "to": "persist_output", "condition": "default"},
+    {"from": "execute_agent", "to": "information_collect", "condition": "information collect request"},
     {"from": "writeup", "to": "persist_output"},
 ]
 

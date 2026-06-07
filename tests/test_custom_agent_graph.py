@@ -6,8 +6,18 @@ from langchain_core.messages import AIMessage, HumanMessage
 from server.agent.custom_agent import CustomAgent
 from server.agent.events.streaming import AgentStreamEvent, StreamCallbackHandler
 from server.agent.runtime.run_context import AgentRunContext
+from server.agent.trace.execution_trace import GRAPH_EDGES, GRAPH_NODES
 from server.models.llm import LLMConfig
 from server.schemas.agent import AgentRunRequest
+
+
+def test_execution_graph_metadata_edges_reference_known_nodes():
+    node_ids = {node["id"] for node in GRAPH_NODES}
+
+    assert all(
+        edge["from"] in node_ids and edge["to"] in node_ids
+        for edge in GRAPH_EDGES
+    )
 
 
 def _parse_stream_event(raw_event: AgentStreamEvent):
