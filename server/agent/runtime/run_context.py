@@ -51,6 +51,11 @@ class AgentRunContext:
     # Main-agent message output returned by DeepAgent.
     all_messages: list[Any] = field(default_factory=list)
 
+    # Messages produced by graph agents during this run. Nodes can be revisited,
+    # so persistence uses this append-only sequence instead of only the latest
+    # node output.
+    generated_messages: list[Any] = field(default_factory=list)
+
     # Final text emitted in the done event after persistence chooses the best
     # available assistant output.
     assistant_text: str = ""
@@ -58,6 +63,7 @@ class AgentRunContext:
     # Optional information collection output, persisted as its own agent
     # message and appended into the main-agent prompt.
     information_collect_message: AIMessage | None = None
+    information_collect_messages: list[AIMessage] = field(default_factory=list)
     information_collect_text: str = ""
 
     # Optional report output. When present, it becomes the final assistant text.
@@ -70,6 +76,14 @@ class AgentRunContext:
     # Current graph status snapshot for live UI rendering and persisted trace
     # metadata.
     graph_nodes: list[dict[str, Any]] = field(default_factory=initial_graph_nodes)
+
+    # Router bookkeeping. Routers can send execution back through nodes, so
+    # these counters guard against unbounded cycles and inform LLM decisions.
+    node_visit_counts: dict[str, int] = field(default_factory=dict)
+    prepare_route_count: int = 0
+    prepare_route_actions: dict[str, int] = field(default_factory=dict)
+    post_execute_route_count: int = 0
+    post_execute_route_actions: dict[str, int] = field(default_factory=dict)
 
 
 class AgentGraphState(TypedDict):

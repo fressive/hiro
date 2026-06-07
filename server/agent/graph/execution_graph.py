@@ -1,9 +1,10 @@
 """LangGraph execution graph for session-scoped agent runs."""
 
 import asyncio
+import json
 from typing import Any, Callable
 
-from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 
 from server.agent.events.streaming import AgentStreamEvent, stream_event
@@ -23,11 +24,56 @@ from server.agent.subagents.writeup_agent import (
 )
 from server.agent.trace.execution_trace import GRAPH_EDGES
 from server.agent.utils.tool_call_ids import normalize_ai_message_tool_call_ids
+from server.core.logger import logger
 from server.schemas.agent import AgentRunRequest
 
 MAIN_AGENT_NAME = "main_agent"
 INFORMATION_COLLECT_AGENT_NAME = "information_collect_agent"
 WRITEUP_AGENT_NAME = "writeup_agent"
+PREPARE_ROUTE_ACTIONS = {
+    "information_collect",
+    "execute_agent",
+}
+POST_EXECUTE_ROUTE_ACTIONS = {
+    "information_collect",
+    "writeup",
+    "persist_output",
+}
+MAX_POST_EXECUTE_ROUTE_DECISIONS = 8
+MAX_INFORMATION_COLLECT_ROUTES = 3
+ROUTE_CONTEXT_MAX_CHARS = 16000
+ROUTE_MESSAGE_MAX_CHARS = 2000
+PREPARE_ROUTE_SYSTEM_PROMPT = """You are a deterministic router for a penetration-testing agent graph.
+
+Choose exactly one next action after context has been prepared and before the
+main agent runs.
+
+Allowed actions:
+- information_collect: run the information collection subagent first, then continue to the main agent.
+- execute_agent: skip pre-run information collection and run the main agent now.
+
+Nodes can be selected more than once. Do not avoid an action only because its
+node status is done or skipped. Decide from the current request, prepared
+history, available context, and node visit counts.
+
+Return only compact JSON in this exact shape:
+{"next_action":"execute_agent"}"""
+POST_EXECUTE_ROUTE_SYSTEM_PROMPT = """You are a deterministic router for a penetration-testing agent graph.
+
+Choose exactly one next action after the main agent has produced a response.
+
+Allowed actions:
+- information_collect: run the information collection subagent, then return to the main agent.
+- writeup: generate a final Markdown report from the available evidence.
+- persist_output: finish this run and persist the current output.
+
+Nodes can be selected more than once. Do not avoid an action only because its
+node status is done or skipped. Decide from the latest request, evidence, node
+visit counts, and generated messages.
+
+Return only compact JSON in this exact shape:
+{"next_action":"persist_output"}"""
+
 
 class AgentExecutionGraph:
     """Build and run the session agent graph."""
@@ -92,24 +138,164 @@ class AgentExecutionGraph:
         graph.add_edge("persist_output", END)
         return graph.compile()
 
-    def _route_after_prepare_context(self, state: AgentGraphState) -> str:
-        """Choose whether to run information collection before the main agent."""
+    async def _route_after_prepare_context(self, state: AgentGraphState) -> str:
+        """Use the LLM router to choose the first graph agent branch."""
+        run = state["run"]
+        decision = await self._llm_route_after_prepare_context(run)
+        run.prepare_route_count += 1
+        run.prepare_route_actions[decision] = (
+            run.prepare_route_actions.get(decision, 0) + 1
+        )
+        if decision == "execute_agent":
+            self._skip_pending_graph_node(run, "information_collect")
+        return decision
+
+    async def _llm_route_after_prepare_context(self, run: AgentRunContext) -> str:
+        """Ask the main model to select the first graph agent branch."""
+        try:
+            result = await self._runtime.build_llm(MAIN_AGENT_NAME).ainvoke(
+                [
+                    SystemMessage(content=PREPARE_ROUTE_SYSTEM_PROMPT),
+                    HumanMessage(content=self._prepare_route_context(run)),
+                ]
+            )
+            decision = _parse_prepare_route(result)
+            if decision:
+                return decision
+            logger.warning("Invalid prepare route decision: %s", result)
+        except Exception as exc:
+            logger.warning("Prepare LLM router failed: %s", exc)
+        return self._fallback_prepare_route()
+
+    def _fallback_prepare_route(self) -> str:
+        """Conservative non-LLM fallback if prepare routing fails."""
         if should_collect_information(self.input_text):
             return "information_collect"
-        self._skip_pending_graph_node(state["run"], "information_collect")
         return "execute_agent"
 
-    def _route_after_execute(self, state: AgentGraphState) -> str:
-        """Choose the post-main-agent branch for report or final persistence."""
+    def _prepare_route_context(self, run: AgentRunContext) -> str:
+        """Build compact context for the pre-main-agent router."""
+        payload = {
+            "current_user_request": self.input_text,
+            "available_actions": sorted(PREPARE_ROUTE_ACTIONS),
+            "node_statuses": {
+                node["id"]: node.get("status")
+                for node in run.graph_nodes
+                if node.get("id")
+            },
+            "node_visit_counts": run.node_visit_counts,
+            "prepare_route_count": run.prepare_route_count,
+            "prepare_route_actions": run.prepare_route_actions,
+            "history_messages": _render_route_messages(run.history_messages),
+            "has_mcp_tools": bool(run.mcp_tools),
+            "system_prompt": run.full_system_prompt,
+        }
+        context = json.dumps(payload, ensure_ascii=False, default=str)
+        if len(context) <= ROUTE_CONTEXT_MAX_CHARS:
+            return context
+        return (
+            "The oldest prepare routing context was truncated.\n"
+            + context[-ROUTE_CONTEXT_MAX_CHARS:]
+        )
+
+    async def _route_after_execute(self, state: AgentGraphState) -> str:
+        """Use the LLM router to choose the next post-main-agent branch."""
+        run = state["run"]
+        decision = await self._llm_route_after_execute(run)
+        decision = self._bounded_post_execute_route(run, decision)
+        run.post_execute_route_count += 1
+        run.post_execute_route_actions[decision] = (
+            run.post_execute_route_actions.get(decision, 0) + 1
+        )
+
+        if decision == "persist_output":
+            self._skip_pending_graph_node(run, "information_collect")
+            self._skip_pending_graph_node(run, "writeup")
+        elif decision == "writeup":
+            self._skip_pending_graph_node(run, "information_collect")
+
+        return decision
+
+    async def _llm_route_after_execute(self, run: AgentRunContext) -> str:
+        """Ask the main model to select the next graph action."""
+        try:
+            result = await self._runtime.build_llm(MAIN_AGENT_NAME).ainvoke(
+                [
+                    SystemMessage(content=POST_EXECUTE_ROUTE_SYSTEM_PROMPT),
+                    HumanMessage(content=self._route_context(run)),
+                ]
+            )
+            decision = _parse_post_execute_route(result)
+            if decision:
+                return decision
+            logger.warning("Invalid post-execute route decision: %s", result)
+        except Exception as exc:
+            logger.warning("Post-execute LLM router failed: %s", exc)
+        return self._fallback_post_execute_route(run)
+
+    def _fallback_post_execute_route(self, run: AgentRunContext) -> str:
+        """Conservative non-LLM fallback if routing fails."""
         if should_generate_writeup(self.input_text):
             return "writeup"
-        self._skip_pending_graph_node(state["run"], "writeup")
-        if (
-            should_collect_information(self.input_text)
-            and state["run"].information_collect_message is None
+        if should_collect_information(self.input_text) and (
+            run.post_execute_route_actions.get("information_collect", 0) == 0
         ):
             return "information_collect"
         return "persist_output"
+
+    def _bounded_post_execute_route(
+        self,
+        run: AgentRunContext,
+        decision: str,
+    ) -> str:
+        """Apply loop guards while still allowing repeated node visits."""
+        if run.post_execute_route_count >= MAX_POST_EXECUTE_ROUTE_DECISIONS:
+            logger.warning(
+                "Post-execute route limit reached for session %s; persisting output",
+                self.session_id,
+            )
+            return "persist_output"
+        if (
+            decision == "information_collect"
+            and run.post_execute_route_actions.get("information_collect", 0)
+            >= MAX_INFORMATION_COLLECT_ROUTES
+        ):
+            logger.warning(
+                "Information collection route limit reached for session %s; "
+                "persisting output",
+                self.session_id,
+            )
+            return "persist_output"
+        return decision
+
+    def _route_context(self, run: AgentRunContext) -> str:
+        """Build compact routing context for the LLM router."""
+        payload = {
+            "current_user_request": self.input_text,
+            "available_actions": sorted(POST_EXECUTE_ROUTE_ACTIONS),
+            "node_statuses": {
+                node["id"]: node.get("status")
+                for node in run.graph_nodes
+                if node.get("id")
+            },
+            "node_visit_counts": run.node_visit_counts,
+            "post_execute_route_count": run.post_execute_route_count,
+            "post_execute_route_actions": run.post_execute_route_actions,
+            "latest_information_collect_brief": run.information_collect_text,
+            "latest_main_agent_messages": _render_route_messages(
+                run.all_messages[len(run.history_messages) + 1 :]
+            ),
+            "generated_messages_so_far": _render_route_messages(
+                run.generated_messages
+            ),
+        }
+        context = json.dumps(payload, ensure_ascii=False, default=str)
+        if len(context) <= ROUTE_CONTEXT_MAX_CHARS:
+            return context
+        return (
+            "The oldest routing context was truncated.\n"
+            + context[-ROUTE_CONTEXT_MAX_CHARS:]
+        )
 
     async def _graph_persist_input(
         self,
@@ -192,6 +378,8 @@ class AgentExecutionGraph:
             run.information_collect_text = extract_message_text(collection_message)
             if run.information_collect_text:
                 run.information_collect_message = collection_message
+                run.information_collect_messages.append(collection_message)
+                run.generated_messages.append(collection_message)
                 append_information_collect_artifact(
                     self.session_id,
                     run.information_collect_text,
@@ -225,6 +413,9 @@ class AgentExecutionGraph:
                 start_index=len(run.history_messages) + 1,
                 name=MAIN_AGENT_NAME,
             )
+            run.generated_messages.extend(
+                run.all_messages[len(run.history_messages) + 1 :]
+            )
         except Exception:
             await self._emit_graph_node(run, "execute_agent", "error")
             raise
@@ -244,7 +435,7 @@ class AgentExecutionGraph:
             )
             writeup_message = _with_agent_name(
                 await writeup_agent.generate(
-                    all_messages=run.all_messages,
+                    all_messages=_messages_for_writeup(run, self.input_text),
                     history_messages=run.history_messages,
                 ),
                 WRITEUP_AGENT_NAME,
@@ -253,6 +444,7 @@ class AgentExecutionGraph:
             if run.writeup_text:
                 save_writeup_artifact(self.session_id, run.writeup_text)
             run.all_messages.append(writeup_message)
+            run.generated_messages.append(writeup_message)
         except Exception:
             await self._emit_graph_node(run, "writeup", "error")
             raise
@@ -276,16 +468,12 @@ class AgentExecutionGraph:
                 await run.update_task
                 run.update_task = None
 
-            new_messages = []
-            if run.information_collect_message is not None:
-                new_messages.append(run.information_collect_message)
-
-            new_messages.extend(
+            new_messages = [
                 normalize_ai_message_tool_call_ids(msg)
                 if isinstance(msg, BaseMessage)
                 else msg
-                for msg in run.all_messages[len(run.history_messages) + 1 :]
-            )
+                for msg in run.generated_messages
+            ]
             run.assistant_text = await self._messages.save_final_messages(
                 new_messages=new_messages,
                 assistant_msg_id=run.assistant_msg_id,
@@ -318,6 +506,8 @@ class AgentExecutionGraph:
         status: str,
     ) -> None:
         """Update graph status, persist trace metadata, and stream the event."""
+        if status == "running":
+            run.node_visit_counts[node_id] = run.node_visit_counts.get(node_id, 0) + 1
         self._set_graph_node_status(run, node_id, status)
         if run.assistant_msg_id is not None:
             await self._persist_trace_metadata(run)
@@ -408,6 +598,145 @@ class AgentExecutionGraph:
             MAIN_AGENT_NAME: self._runtime.agent_model_name(MAIN_AGENT_NAME),
             WRITEUP_AGENT_NAME: self._runtime.agent_model_name(WRITEUP_AGENT_NAME),
         }
+
+
+def _messages_for_writeup(
+    run: AgentRunContext,
+    input_text: str,
+) -> list[Any]:
+    """Return all generated run messages in execution order for writeup."""
+    return [
+        *run.history_messages,
+        HumanMessage(content=input_text),
+        *run.generated_messages,
+    ]
+
+
+def _render_route_messages(
+    messages: list[Any],
+    *,
+    max_messages: int = 12,
+) -> list[dict[str, Any]]:
+    """Render recent messages into compact JSON-safe routing context."""
+    rendered: list[dict[str, Any]] = []
+    for message in messages[-max_messages:]:
+        content = extract_message_text(message)
+        if not content and not isinstance(message, BaseMessage):
+            content = str(message)
+        if len(content) > ROUTE_MESSAGE_MAX_CHARS:
+            content = content[:ROUTE_MESSAGE_MAX_CHARS] + "\n...[truncated]"
+
+        tool_calls = getattr(message, "tool_calls", None)
+        if tool_calls:
+            tool_text = json.dumps(tool_calls, ensure_ascii=False, default=str)
+            if len(tool_text) > ROUTE_MESSAGE_MAX_CHARS:
+                tool_text = tool_text[:ROUTE_MESSAGE_MAX_CHARS] + "\n...[truncated]"
+        else:
+            tool_text = ""
+
+        rendered.append(
+            {
+                "type": getattr(message, "type", type(message).__name__),
+                "name": getattr(message, "name", None),
+                "content": content,
+                "tool_calls": tool_text,
+            }
+        )
+    return rendered
+
+
+def _parse_prepare_route(result: Any) -> str | None:
+    """Parse an LLM prepare-route response into an allowed graph action."""
+    text = extract_message_text(result).strip()
+    if not text and isinstance(result, str):
+        text = result.strip()
+    if not text:
+        return None
+
+    parsed = _parse_route_json(text, PREPARE_ROUTE_ACTIONS)
+    if parsed:
+        return parsed
+
+    normalized = text.strip().strip("`'\". ").lower()
+    if normalized in PREPARE_ROUTE_ACTIONS:
+        return normalized
+
+    aliases = {
+        "collect": "information_collect",
+        "information": "information_collect",
+        "information-collect": "information_collect",
+        "recon": "information_collect",
+        "execute": "execute_agent",
+        "main": "execute_agent",
+        "main_agent": "execute_agent",
+        "run": "execute_agent",
+        "continue": "execute_agent",
+        "proceed": "execute_agent",
+    }
+    return aliases.get(normalized)
+
+
+def _parse_post_execute_route(result: Any) -> str | None:
+    """Parse an LLM routing response into an allowed graph action."""
+    text = extract_message_text(result).strip()
+    if not text and isinstance(result, str):
+        text = result.strip()
+    if not text:
+        return None
+
+    parsed = _parse_route_json(text, POST_EXECUTE_ROUTE_ACTIONS)
+    if parsed:
+        return parsed
+
+    normalized = text.strip().strip("`'\". ").lower()
+    if normalized in POST_EXECUTE_ROUTE_ACTIONS:
+        return normalized
+
+    aliases = {
+        "collect": "information_collect",
+        "information": "information_collect",
+        "information-collect": "information_collect",
+        "recon": "information_collect",
+        "report": "writeup",
+        "write-up": "writeup",
+        "write up": "writeup",
+        "finish": "persist_output",
+        "final": "persist_output",
+        "done": "persist_output",
+        "persist": "persist_output",
+    }
+    return aliases.get(normalized)
+
+
+def _parse_route_json(text: str, allowed_actions: set[str]) -> str | None:
+    """Parse a JSON route response, including fenced JSON blocks."""
+    candidate = text
+    if "```" in candidate:
+        parts = candidate.split("```")
+        candidate = next(
+            (
+                part.removeprefix("json").strip()
+                for part in parts
+                if "next_action" in part or "action" in part
+            ),
+            candidate,
+        )
+
+    try:
+        payload = json.loads(candidate)
+    except json.JSONDecodeError:
+        return None
+
+    raw_action: Any
+    if isinstance(payload, dict):
+        raw_action = payload.get("next_action") or payload.get("action")
+    else:
+        raw_action = payload
+    if not isinstance(raw_action, str):
+        return None
+
+    action = raw_action.strip().lower()
+    return action if action in allowed_actions else None
 
 
 def _append_information_collect_prompt(

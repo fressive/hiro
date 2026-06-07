@@ -38,6 +38,24 @@ def _parse_stream_event(raw_event: AgentStreamEvent):
     return raw_event.event, raw_event.data
 
 
+def _stub_route_llm(monkeypatch, agent: CustomAgent, decisions: list[str]):
+    route_decisions = list(decisions)
+    route_calls = []
+
+    class FakeRouteLLM:
+        async def ainvoke(self, messages, config=None):
+            route_calls.append(messages)
+            decision = route_decisions.pop(0) if route_decisions else "persist_output"
+            return AIMessage(content=f'{{"next_action":"{decision}"}}')
+
+    monkeypatch.setattr(
+        agent._runtime,
+        "build_llm",
+        lambda agent_name=None: FakeRouteLLM(),
+    )
+    return route_calls
+
+
 async def _collect_until_done(queue: asyncio.Queue[AgentStreamEvent | None]):
     events = []
     while True:
@@ -127,6 +145,11 @@ def test_custom_agent_execution_graph_persists_done_event(monkeypatch):
         monkeypatch.setattr(agent._messages, "load_history", load_history)
         monkeypatch.setattr(agent._runtime, "execute", execute)
         monkeypatch.setattr(agent._messages, "save_final_messages", save_final_messages)
+        route_calls = _stub_route_llm(
+            monkeypatch,
+            agent,
+            ["execute_agent", "persist_output"],
+        )
 
         queue: asyncio.Queue[AgentStreamEvent | None] = asyncio.Queue()
         callback = StreamCallbackHandler(queue, asyncio.get_running_loop())
@@ -176,6 +199,7 @@ def test_custom_agent_execution_graph_persists_done_event(monkeypatch):
             ("save_final", 20),
         ]
         assert "start_periodic_update" in calls
+        assert len(route_calls) == 2
 
     asyncio.run(run_graph())
 
@@ -184,12 +208,12 @@ def test_custom_agent_execution_graph_routes_to_information_collect_node(monkeyp
     async def run_graph():
         payload = AgentRunRequest(
             config_id=1,
-            input="collect information for https://target.test",
+            input="scan target",
         )
         config = LLMConfig(provider="openai", api_key="test", model="default-model")
         agent = CustomAgent(
             session_id=123,
-            session_title="collect information",
+            session_title="scan target",
             payload=payload,
             config=config,
             agent_configs={
@@ -277,6 +301,11 @@ def test_custom_agent_execution_graph_routes_to_information_collect_node(monkeyp
         )
         monkeypatch.setattr(agent._runtime, "execute", execute)
         monkeypatch.setattr(agent._messages, "save_final_messages", save_final_messages)
+        route_calls = _stub_route_llm(
+            monkeypatch,
+            agent,
+            ["information_collect", "persist_output"],
+        )
 
         queue: asyncio.Queue[AgentStreamEvent | None] = asyncio.Queue()
         callback = StreamCallbackHandler(queue, asyncio.get_running_loop())
@@ -333,6 +362,153 @@ def test_custom_agent_execution_graph_routes_to_information_collect_node(monkeyp
                 "session_id": 123,
             },
         )
+        assert len(route_calls) == 2
+
+    asyncio.run(run_graph())
+
+
+def test_custom_agent_execution_graph_allows_repeated_router_nodes(monkeypatch):
+    async def run_graph():
+        payload = AgentRunRequest(config_id=1, input="scan target")
+        config = LLMConfig(provider="openai", api_key="test", model="test-model")
+        agent = CustomAgent(
+            session_id=123,
+            session_title="scan target",
+            payload=payload,
+            config=config,
+        )
+
+        async def save_user_message():
+            return 10
+
+        async def create_assistant_placeholder():
+            return 20
+
+        async def update_assistant_periodically(*args):
+            await args[2].wait()
+
+        async def load_mcp_tools(server_names, exit_stack):
+            return []
+
+        async def load_history(*, user_msg_id, assistant_msg_id):
+            return []
+
+        async def generate_information_collect(self, *, history_messages):
+            nonlocal information_collect_calls
+            information_collect_calls += 1
+            calls.append(("information_collect", information_collect_calls))
+            return AIMessage(content=f"brief {information_collect_calls}")
+
+        def append_information_collect_artifact(session_id, collection_markdown):
+            calls.append(("info_artifact", collection_markdown))
+
+        async def execute(**kwargs):
+            nonlocal execute_calls
+            execute_calls += 1
+            calls.append(("execute", execute_calls))
+            return [
+                HumanMessage(content=payload.input),
+                AIMessage(content=f"main {execute_calls}"),
+            ]
+
+        async def save_final_messages(**kwargs):
+            calls.append(
+                (
+                    "saved_contents",
+                    [
+                        getattr(message, "content", "")
+                        for message in kwargs["new_messages"]
+                    ],
+                )
+            )
+            calls.append(
+                (
+                    "saved_agents",
+                    [
+                        getattr(message, "name", None)
+                        for message in kwargs["new_messages"]
+                    ],
+                )
+            )
+            return "final"
+
+        calls = []
+        execute_calls = 0
+        information_collect_calls = 0
+        monkeypatch.setattr(agent._messages, "save_user_message", save_user_message)
+        monkeypatch.setattr(
+            agent._messages,
+            "create_assistant_placeholder",
+            create_assistant_placeholder,
+        )
+        monkeypatch.setattr(
+            agent._messages,
+            "update_assistant_periodically",
+            update_assistant_periodically,
+        )
+        monkeypatch.setattr(
+            "server.agent.graph.execution_graph.load_mcp_tools",
+            load_mcp_tools,
+        )
+        monkeypatch.setattr(agent._messages, "load_history", load_history)
+        monkeypatch.setattr(
+            "server.agent.graph.execution_graph.InformationCollectAgent.generate",
+            generate_information_collect,
+        )
+        monkeypatch.setattr(
+            "server.agent.graph.execution_graph.append_information_collect_artifact",
+            append_information_collect_artifact,
+        )
+        monkeypatch.setattr(agent._runtime, "execute", execute)
+        monkeypatch.setattr(agent._messages, "save_final_messages", save_final_messages)
+        route_calls = _stub_route_llm(
+            monkeypatch,
+            agent,
+            [
+                "execute_agent",
+                "information_collect",
+                "information_collect",
+                "persist_output",
+            ],
+        )
+
+        queue: asyncio.Queue[AgentStreamEvent | None] = asyncio.Queue()
+        callback = StreamCallbackHandler(queue, asyncio.get_running_loop())
+        async with AsyncExitStack() as exit_stack:
+            context = AgentRunContext(
+                queue=queue,
+                callback=callback,
+                agent_done=asyncio.Event(),
+                exit_stack=exit_stack,
+            )
+            await agent._execution_graph.ainvoke({"run": context})
+
+        events = await _collect_until_done(queue)
+        graph_events = [event for event in events if event[0] == "graph_node"]
+        assert len(route_calls) == 4
+        assert execute_calls == 3
+        assert information_collect_calls == 2
+        assert graph_events.count(
+            ("graph_node", {"id": "information_collect", "status": "running"})
+        ) == 2
+        assert graph_events.count(
+            ("graph_node", {"id": "execute_agent", "status": "running"})
+        ) == 3
+        assert (
+            "saved_contents",
+            ["main 1", "brief 1", "main 2", "brief 2", "main 3"],
+        ) in calls
+        assert (
+            "saved_agents",
+            [
+                "main_agent",
+                "information_collect_agent",
+                "main_agent",
+                "information_collect_agent",
+                "main_agent",
+            ],
+        ) in calls
+        assert events[-1] == ("done", {"text": "final", "session_id": 123})
 
     asyncio.run(run_graph())
 
@@ -395,6 +571,7 @@ def test_custom_agent_ignores_mcp_cleanup_error_after_done(monkeypatch):
         monkeypatch.setattr(agent._messages, "load_history", load_history)
         monkeypatch.setattr(agent._runtime, "execute", execute)
         monkeypatch.setattr(agent._messages, "save_final_messages", save_final_messages)
+        _stub_route_llm(monkeypatch, agent, ["execute_agent", "persist_output"])
 
         queue: asyncio.Queue[AgentStreamEvent | None] = asyncio.Queue()
         callback = StreamCallbackHandler(queue, asyncio.get_running_loop())
@@ -493,6 +670,7 @@ def test_custom_agent_execution_graph_routes_to_writeup_node(monkeypatch):
             save_writeup_artifact,
         )
         monkeypatch.setattr(agent._messages, "save_final_messages", save_final_messages)
+        route_calls = _stub_route_llm(monkeypatch, agent, ["execute_agent", "writeup"])
 
         queue: asyncio.Queue[AgentStreamEvent | None] = asyncio.Queue()
         callback = StreamCallbackHandler(queue, asyncio.get_running_loop())
@@ -528,5 +706,6 @@ def test_custom_agent_execution_graph_routes_to_writeup_node(monkeypatch):
             "# Report\n\nFound exposed admin panel.",
         ] in calls
         assert ("saved_agents", ["main_agent", "writeup_agent"]) in calls
+        assert len(route_calls) == 2
 
     asyncio.run(run_graph())
