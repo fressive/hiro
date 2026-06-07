@@ -3,12 +3,9 @@ from contextlib import AsyncExitStack
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from server.agent.custom_agent import (
-    AgentStreamEvent,
-    CustomAgent,
-    _AgentRunContext,
-    _StreamCallbackHandler,
-)
+from server.agent.custom_agent import CustomAgent
+from server.agent.run_context import AgentRunContext
+from server.agent.streaming import AgentStreamEvent, StreamCallbackHandler
 from server.models.models import LLMConfig
 from server.schemas.agent import AgentRunRequest
 
@@ -51,7 +48,7 @@ def test_custom_agent_execution_graph_persists_done_event(monkeypatch):
             calls.append("start_periodic_update")
             await args[2].wait()
 
-        async def load_mcp_tools(exit_stack):
+        async def load_mcp_tools(server_names, exit_stack):
             calls.append("load_mcp")
             return []
 
@@ -79,22 +76,26 @@ def test_custom_agent_execution_graph_persists_done_event(monkeypatch):
             return "done"
 
         calls = []
-        monkeypatch.setattr(agent, "_save_user_message", save_user_message)
+        monkeypatch.setattr(agent._messages, "save_user_message", save_user_message)
         monkeypatch.setattr(
-            agent, "_create_assistant_placeholder", create_assistant_placeholder
+            agent._messages,
+            "create_assistant_placeholder",
+            create_assistant_placeholder,
         )
         monkeypatch.setattr(
-            agent, "_update_assistant_periodically", update_assistant_periodically
+            agent._messages,
+            "update_assistant_periodically",
+            update_assistant_periodically,
         )
-        monkeypatch.setattr(agent, "_load_mcp_tools", load_mcp_tools)
-        monkeypatch.setattr(agent, "_load_history", load_history)
-        monkeypatch.setattr(agent, "_execute", execute)
-        monkeypatch.setattr(agent, "_save_final_messages", save_final_messages)
+        monkeypatch.setattr("server.agent.custom_agent.load_mcp_tools", load_mcp_tools)
+        monkeypatch.setattr(agent._messages, "load_history", load_history)
+        monkeypatch.setattr(agent._runtime, "execute", execute)
+        monkeypatch.setattr(agent._messages, "save_final_messages", save_final_messages)
 
         queue: asyncio.Queue[AgentStreamEvent | None] = asyncio.Queue()
-        callback = _StreamCallbackHandler(queue, asyncio.get_running_loop())
+        callback = StreamCallbackHandler(queue, asyncio.get_running_loop())
         async with AsyncExitStack() as exit_stack:
-            context = _AgentRunContext(
+            context = AgentRunContext(
                 queue=queue,
                 callback=callback,
                 agent_done=asyncio.Event(),
@@ -159,7 +160,7 @@ def test_custom_agent_execution_graph_routes_to_writeup_node(monkeypatch):
         async def update_assistant_periodically(*args):
             await args[2].wait()
 
-        async def load_mcp_tools(exit_stack):
+        async def load_mcp_tools(server_names, exit_stack):
             return []
 
         async def load_history(*, user_msg_id, assistant_msg_id):
@@ -189,24 +190,28 @@ def test_custom_agent_execution_graph_routes_to_writeup_node(monkeypatch):
             return "Verified exposed admin panel."
 
         calls = []
-        monkeypatch.setattr(agent, "_save_user_message", save_user_message)
+        monkeypatch.setattr(agent._messages, "save_user_message", save_user_message)
         monkeypatch.setattr(
-            agent, "_create_assistant_placeholder", create_assistant_placeholder
+            agent._messages,
+            "create_assistant_placeholder",
+            create_assistant_placeholder,
         )
         monkeypatch.setattr(
-            agent, "_update_assistant_periodically", update_assistant_periodically
+            agent._messages,
+            "update_assistant_periodically",
+            update_assistant_periodically,
         )
-        monkeypatch.setattr(agent, "_load_mcp_tools", load_mcp_tools)
-        monkeypatch.setattr(agent, "_load_history", load_history)
-        monkeypatch.setattr(agent, "_execute", execute)
+        monkeypatch.setattr("server.agent.custom_agent.load_mcp_tools", load_mcp_tools)
+        monkeypatch.setattr(agent._messages, "load_history", load_history)
+        monkeypatch.setattr(agent._runtime, "execute", execute)
         monkeypatch.setattr(agent, "_generate_writeup", generate_writeup)
         monkeypatch.setattr(agent, "_save_writeup_artifact", save_writeup_artifact)
-        monkeypatch.setattr(agent, "_save_final_messages", save_final_messages)
+        monkeypatch.setattr(agent._messages, "save_final_messages", save_final_messages)
 
         queue: asyncio.Queue[AgentStreamEvent | None] = asyncio.Queue()
-        callback = _StreamCallbackHandler(queue, asyncio.get_running_loop())
+        callback = StreamCallbackHandler(queue, asyncio.get_running_loop())
         async with AsyncExitStack() as exit_stack:
-            context = _AgentRunContext(
+            context = AgentRunContext(
                 queue=queue,
                 callback=callback,
                 agent_done=asyncio.Event(),

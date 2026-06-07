@@ -10,11 +10,11 @@ from server.agent.token_usage import (
     normalize_token_usage,
     subtract_token_usage,
 )
-from server.api.v1.endpoints.session import _stream_text_segments
+from server.agent.streaming import stream_text_segments
 
 
 def test_stream_text_segments_extracts_structured_text_blocks():
-    segments = _stream_text_segments(
+    segments = stream_text_segments(
         [
             {"type": "text", "text": "hello"},
             {"type": "tool_use", "name": "log", "input": {}},
@@ -26,7 +26,7 @@ def test_stream_text_segments_extracts_structured_text_blocks():
 
 
 def test_stream_text_segments_extracts_thinking_blocks():
-    segments = _stream_text_segments(
+    segments = stream_text_segments(
         [
             {"type": "thinking", "thinking": "checking"},
             {"type": "reasoning", "reasoning": " paths"},
@@ -41,7 +41,7 @@ def test_stream_text_segments_reads_message_chunk_content():
         message=AIMessageChunk(content=[{"type": "text", "text": "streamed"}])
     )
 
-    assert _stream_text_segments(chunk.message) == [("text", "streamed")]
+    assert stream_text_segments(chunk.message) == [("text", "streamed")]
 
 
 def test_normalize_token_usage_reads_openai_cached_prompt_tokens():

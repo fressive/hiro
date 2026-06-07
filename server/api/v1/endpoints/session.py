@@ -22,14 +22,13 @@ from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
-from server.agent.custom_agent import (
-    AgentStreamEvent,
-    CustomAgent,
-    _stream_text_segments,
+from server.agent.custom_agent import CustomAgent
+from server.agent.execution_trace import (
     attach_trace_metadata_fallback,
     normalize_trace_metadata,
 )
 from server.agent.session_events import SessionEventHub
+from server.agent.streaming import AgentStreamEvent
 from server.agent.tools import agent_tools
 from server.db import AsyncSessionLocal, get_session
 from server.models.models import (

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 
-from server.agent.custom_agent import AgentStreamEvent
+from server.agent.streaming import AgentStreamEvent
 
 
 class SessionEventHub:
