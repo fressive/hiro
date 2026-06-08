@@ -1,6 +1,9 @@
 """LLM construction and execution for session-scoped agents."""
 
 import asyncio
+import inspect
+import json
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +15,7 @@ from langchain_core.messages import BaseMessage, HumanMessage
 
 from server.agent.events.streaming import StreamCallbackHandler
 from server.agent.runtime.context import SessionContext
+from server.agent.runtime.mcp_loader import create_dynamic_mcp_router_tools
 from server.agent.runtime.sandboxed_backend import SessionSandboxedBackend
 from server.agent.subagents.information_collect_agent import (
     INFORMATION_COLLECT_AGENT_NAME,
@@ -101,11 +105,11 @@ def is_retryable_stream_error(error: BaseException) -> bool:
 
 
 class AgentRuntime:
-    """Build models, prompts, tools, and execution backends for one run.
+    """Build and hold the session-scoped DeepAgent runtime.
 
     This class deliberately does not own persistence or streaming queue
-    lifetime. It builds the LLM, selected tools, effective system prompt, and
-    session-scoped filesystem backend for one agent run.
+    lifetime. It keeps the main agent reference stable for the session while
+    accepting per-run input, callback, and context updates.
     """
 
     def __init__(
@@ -122,25 +126,47 @@ class AgentRuntime:
         self.payload = payload
         self.config = config
         self.agent_configs = agent_configs or {}
+        self._main_agent: Any | None = None
+        self._fallback_agent: Any | None = None
+        self._mcp_router_tools: list[Any] | None = None
+        self._agent_model_names: dict[str, str] | None = None
 
-    def build_system_prompt(self, *, mcp_tools: list[Any], rag_context: str) -> str:
-        """Combine session prompt, MCP usage guidance, and RAG context."""
+    def configure_run(
+        self,
+        *,
+        input_text: str,
+        payload: AgentRunRequest,
+        config: LLMConfig,
+        agent_configs: dict[str, LLMConfig] | None = None,
+    ) -> None:
+        """Update per-run inputs while keeping the session agent references."""
+
+        self.input_text = input_text
+        self.payload = payload
+        self.config = config
+        self.agent_configs = agent_configs or {}
+
+    def build_system_prompt(self) -> str:
+        """Build static instructions used when the session main agent is created."""
 
         full_system_prompt = self.payload.system_prompt or SYSTEM_PROMPT
-        if mcp_tools:
-            # MCP tools are exposed through router tools, so the model needs
-            # explicit instructions instead of seeing every remote tool eagerly.
-            full_system_prompt += (
-                "\n\nMCP access is lazy-loaded through two router tools: "
-                "use mcp_search to find available MCP tools and schemas, then "
-                "use mcp_call with the exact tool_name and JSON arguments."
-            )
-        if rag_context:
-            full_system_prompt += (
-                "\n\nRELEVANT CONTEXT FROM DOCUMENTS:\n"
-                f"{rag_context}"
-            )
+        # MCP tools are stable router tools on the session agent. They read the
+        # current session MCP server list when called instead of binding to one
+        # run's MCP sessions.
+        full_system_prompt += (
+            "\n\nMCP access, when configured for this session, is available "
+            "through two router tools: use mcp_search to find available MCP "
+            "tools and schemas, then use mcp_call with the exact tool_name "
+            "and JSON arguments."
+        )
         return full_system_prompt
+
+    def build_run_context_prompt(self, *, rag_context: str) -> str:
+        """Build dynamic context that belongs only to the current user turn."""
+
+        if not rag_context:
+            return ""
+        return "RELEVANT CONTEXT FROM DOCUMENTS:\n" f"{rag_context}"
 
     def build_main_agent_prompt(self, full_system_prompt: str) -> str:
         """Append project-specific subagent delegation rules for DeepAgent."""
@@ -160,14 +186,12 @@ class AgentRuntime:
         self,
         *,
         history_messages: list[BaseMessage],
-        mcp_tools: list[Any],
         full_system_prompt: str,
-        callback: StreamCallbackHandler,
+        run_context_prompt: str,
+        callback: StreamCallbackHandler | None,
     ) -> list[Any]:
         """Run the main agent and return the complete message sequence."""
 
-        current_tools = self.selected_builtin_tools() + mcp_tools
-        skills_sources = _main_agent_skill_sources()
         main_system_prompt = self.build_main_agent_prompt(full_system_prompt)
 
         for attempt in range(1, MAX_STREAMING_ATTEMPTS + 2):
@@ -179,9 +203,8 @@ class AgentRuntime:
 
             try:
                 messages = await self._execute_deep_agent(
-                    current_tools=current_tools,
-                    skills_sources=skills_sources,
                     main_system_prompt=main_system_prompt,
+                    run_context_prompt=run_context_prompt,
                     callback=callback,
                     history_messages=history_messages,
                     streaming=streaming,
@@ -220,19 +243,99 @@ class AgentRuntime:
     async def _execute_deep_agent(
         self,
         *,
-        current_tools: list[Any],
-        skills_sources: list[str],
         main_system_prompt: str,
-        callback: StreamCallbackHandler,
+        run_context_prompt: str,
+        callback: StreamCallbackHandler | None,
         history_messages: list[BaseMessage],
         streaming: bool,
     ) -> list[Any]:
         """Execute one DeepAgent attempt."""
 
+        agent = self.main_agent(
+            streaming=streaming,
+            main_system_prompt=main_system_prompt,
+        )
+        input_content = self.build_input_content(run_context_prompt)
+        stream = await agent.astream_events(
+            {"messages": history_messages + [HumanMessage(content=input_content)]},
+            version="v3",
+            context=SessionContext(self.session_id),
+        )
+        async with stream:
+            result_state = await self._consume_event_stream(stream, callback)
+        return result_state.get("messages", []) if result_state else []
+
+    async def _consume_event_stream(
+        self,
+        stream: Any,
+        callback: StreamCallbackHandler | None,
+    ) -> dict[str, Any] | None:
+        """Consume DeepAgents v3 projections and return the final output state."""
+
+        if callback is None:
+            return await _stream_output(stream)
+
+        message_iter = _projection_aiter(stream, "messages")
+        tool_call_iter = _projection_aiter(stream, "tool_calls")
+        subagent_iter = _projection_aiter(stream, "subagents")
+        if message_iter is None and tool_call_iter is None and subagent_iter is None:
+            return await _stream_output(stream)
+
+        async with asyncio.TaskGroup() as task_group:
+            if message_iter is not None:
+                task_group.create_task(
+                    _consume_message_streams(
+                        message_iter,
+                        callback=callback,
+                        agent_name=None,
+                        include_in_assistant_text=True,
+                    )
+                )
+            if tool_call_iter is not None:
+                task_group.create_task(
+                    _consume_tool_call_streams(
+                        tool_call_iter,
+                        callback=callback,
+                        agent_name=None,
+                    )
+                )
+            if subagent_iter is not None:
+                task_group.create_task(
+                    _consume_subagent_streams(
+                        subagent_iter,
+                        callback=callback,
+                    )
+                )
+
+        return await _stream_output(stream)
+
+    def main_agent(self, *, streaming: bool, main_system_prompt: str) -> Any:
+        """Return the cached session main agent for the requested mode."""
+
+        if streaming:
+            if self._main_agent is None:
+                self._main_agent = self._create_main_agent(
+                    streaming=True,
+                    main_system_prompt=main_system_prompt,
+                )
+            return self._main_agent
+
+        if self._fallback_agent is None:
+            self._fallback_agent = self._create_main_agent(
+                streaming=False,
+                main_system_prompt=main_system_prompt,
+            )
+        return self._fallback_agent
+
+    def _create_main_agent(self, *, streaming: bool, main_system_prompt: str) -> Any:
+        """Create the DeepAgent runnable for this session."""
+
+        skills_sources = _main_agent_skill_sources()
+        self._agent_model_names = self.current_agent_model_names()
         llm = self.build_llm("main_agent", streaming=streaming)
-        agent = create_deep_agent(
+        return create_deep_agent(
             llm,
-            tools=current_tools,
+            tools=self.selected_builtin_tools() + self.mcp_router_tools(),
             context_schema=SessionContext,
             backend=self.build_backend(),
             skills=skills_sources,
@@ -241,12 +344,18 @@ class AgentRuntime:
             subagents=self.build_subagents(skills_sources),
             permissions=self.build_filesystem_permissions(),
         )
-        result_state = await agent.ainvoke(
-            {"messages": history_messages + [HumanMessage(content=self.input_text)]},
-            config={"callbacks": [callback]} if callback is not None else None,
-            context=SessionContext(self.session_id),
+
+    def build_input_content(self, run_context_prompt: str) -> str:
+        """Attach per-turn context without rebuilding the session main agent."""
+
+        if not run_context_prompt.strip():
+            return self.input_text
+        return (
+            "Use the following context for this request.\n\n"
+            f"{run_context_prompt}\n\n"
+            "User request:\n"
+            f"{self.input_text}"
         )
-        return result_state.get("messages", [])
 
     def build_subagents(self, skills_sources: list[str]) -> list[dict[str, Any]]:
         """Return inner DeepAgent task subagents exposed to the main agent."""
@@ -347,7 +456,20 @@ class AgentRuntime:
     def agent_model_name(self, agent_name: str) -> str:
         """Return the resolved model name used for persisted message metadata."""
 
+        if self._agent_model_names and agent_name in self._agent_model_names:
+            return self._agent_model_names[agent_name]
         return self.agent_config(agent_name).model
+
+    def current_agent_model_names(self) -> dict[str, str]:
+        """Return model names for the currently configured session agents."""
+
+        return {
+            INFORMATION_COLLECT_AGENT_NAME: self.agent_config(
+                INFORMATION_COLLECT_AGENT_NAME
+            ).model,
+            "main_agent": self.agent_config("main_agent").model,
+            WRITEUP_AGENT_NAME: self.agent_config(WRITEUP_AGENT_NAME).model,
+        }
 
     def selected_builtin_tools(self) -> list[Any]:
         """Return built-in tools enabled by the run payload."""
@@ -355,6 +477,15 @@ class AgentRuntime:
         if self.payload.tools is None:
             return []
         return [tool for tool in agent_tools if tool.name in self.payload.tools]
+
+    def mcp_router_tools(self) -> list[Any]:
+        """Return stable MCP router tools for the cached session main agent."""
+
+        if self._mcp_router_tools is None:
+            self._mcp_router_tools = create_dynamic_mcp_router_tools(
+                lambda: self.payload.mcp_servers,
+            )
+        return self._mcp_router_tools
 
     def build_filesystem_permissions(self) -> list[FilesystemPermission]:
         """Return DeepAgent filesystem permissions for mounted project assets."""
@@ -394,6 +525,338 @@ class AgentRuntime:
             default=SessionSandboxedBackend(self.session_id),
             routes=routes,
         )
+
+
+def _projection_aiter(target: Any, name: str) -> AsyncIterator[Any] | None:
+    """Subscribe to a named async v3 stream projection if it exists."""
+
+    projection = getattr(target, name, None)
+    if projection is None:
+        extensions = getattr(target, "extensions", None)
+        getter = getattr(extensions, "get", None)
+        if getter is not None:
+            projection = getter(name)
+    return _value_aiter(projection)
+
+
+def _value_aiter(value: Any) -> AsyncIterator[Any] | None:
+    if value is None:
+        return None
+    aiter_method = getattr(value, "__aiter__", None)
+    if aiter_method is None:
+        return None
+    return aiter_method()
+
+
+async def _stream_output(stream: Any) -> dict[str, Any] | None:
+    output = getattr(stream, "output", None)
+    if output is None:
+        return None
+    result = output() if callable(output) else output
+    if inspect.isawaitable(result):
+        result = await result
+    return result if isinstance(result, dict) else None
+
+
+async def _message_output(message_stream: Any) -> Any:
+    output = getattr(message_stream, "output", None)
+    if output is not None:
+        result = output() if callable(output) else output
+    else:
+        result = message_stream
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
+async def _consume_message_streams(
+    message_iter: AsyncIterator[Any],
+    *,
+    callback: StreamCallbackHandler,
+    agent_name: str | None,
+    include_in_assistant_text: bool,
+) -> None:
+    async with asyncio.TaskGroup() as task_group:
+        async for message_stream in message_iter:
+            text_iter = _value_aiter(getattr(message_stream, "text", None))
+            reasoning_iter = _value_aiter(
+                getattr(message_stream, "reasoning", None)
+            )
+            task_group.create_task(
+                _consume_message_stream(
+                    message_stream,
+                    text_iter=text_iter,
+                    reasoning_iter=reasoning_iter,
+                    callback=callback,
+                    agent_name=agent_name,
+                    include_in_assistant_text=include_in_assistant_text,
+                )
+            )
+
+
+async def _consume_message_stream(
+    message_stream: Any,
+    *,
+    text_iter: AsyncIterator[Any] | None,
+    reasoning_iter: AsyncIterator[Any] | None,
+    callback: StreamCallbackHandler,
+    agent_name: str | None,
+    include_in_assistant_text: bool,
+) -> None:
+    async with asyncio.TaskGroup() as task_group:
+        if text_iter is not None:
+            task_group.create_task(
+                _consume_text_deltas(
+                    text_iter,
+                    callback=callback,
+                    segment_type="text",
+                    agent_name=agent_name,
+                    include_in_assistant_text=include_in_assistant_text,
+                )
+            )
+        if reasoning_iter is not None:
+            task_group.create_task(
+                _consume_text_deltas(
+                    reasoning_iter,
+                    callback=callback,
+                    segment_type="thinking",
+                    agent_name=agent_name,
+                    include_in_assistant_text=include_in_assistant_text,
+                )
+            )
+        output_message = await _message_output(message_stream)
+
+    callback.record_token_usage(getattr(output_message, "usage_metadata", None))
+
+
+async def _consume_text_deltas(
+    delta_iter: AsyncIterator[Any],
+    *,
+    callback: StreamCallbackHandler,
+    segment_type: str,
+    agent_name: str | None,
+    include_in_assistant_text: bool,
+) -> None:
+    async for delta in delta_iter:
+        callback.record_token(
+            _stringify_stream_value(delta),
+            segment_type=segment_type,
+            agent_name=agent_name,
+            include_in_assistant_text=include_in_assistant_text,
+        )
+
+
+async def _consume_tool_call_streams(
+    tool_call_iter: AsyncIterator[Any],
+    *,
+    callback: StreamCallbackHandler,
+    agent_name: str | None,
+) -> None:
+    async with asyncio.TaskGroup() as task_group:
+        async for tool_call in tool_call_iter:
+            tool_name = _tool_call_name(tool_call)
+            event_id = _tool_call_id(tool_call, tool_name)
+            callback.record_tool_start(
+                tool_name=tool_name,
+                event_id=event_id,
+                input_text=_json_text(getattr(tool_call, "input", None)),
+                agent_name=agent_name,
+            )
+            delta_iter = _value_aiter(getattr(tool_call, "output_deltas", None))
+            task_group.create_task(
+                _consume_tool_call(
+                    tool_call,
+                    delta_iter=delta_iter,
+                    callback=callback,
+                    tool_name=tool_name,
+                    event_id=event_id,
+                    agent_name=agent_name,
+                )
+            )
+
+
+async def _consume_tool_call(
+    tool_call: Any,
+    *,
+    delta_iter: AsyncIterator[Any] | None,
+    callback: StreamCallbackHandler,
+    tool_name: str,
+    event_id: str,
+    agent_name: str | None,
+) -> None:
+    output_parts: list[str] = []
+    try:
+        if delta_iter is not None:
+            async for delta in delta_iter:
+                output_parts.append(_stringify_stream_value(delta))
+    except BaseException as exc:
+        callback.record_tool_error(
+            tool_name=tool_name,
+            event_id=event_id,
+            output_text=str(exc),
+            agent_name=agent_name,
+        )
+        raise
+
+    error = getattr(tool_call, "error", None)
+    if error:
+        callback.record_tool_error(
+            tool_name=tool_name,
+            event_id=event_id,
+            output_text=str(error),
+            agent_name=agent_name,
+        )
+        return
+
+    output = getattr(tool_call, "output", None)
+    output_text = (
+        "".join(output_parts)
+        if output is None and output_parts
+        else _stringify_stream_value(output)
+    )
+    callback.record_tool_end(
+        tool_name=tool_name,
+        event_id=event_id,
+        output_text=output_text,
+        agent_name=agent_name,
+    )
+
+
+async def _consume_subagent_streams(
+    subagent_iter: AsyncIterator[Any],
+    *,
+    callback: StreamCallbackHandler,
+) -> None:
+    async with asyncio.TaskGroup() as task_group:
+        async for subagent in subagent_iter:
+            name = _subagent_name(subagent)
+            path = _subagent_path(subagent)
+            callback.record_subagent_start(
+                name=name,
+                path=path,
+                task_input=getattr(subagent, "task_input", None),
+            )
+            message_iter = _projection_aiter(subagent, "messages")
+            tool_call_iter = _projection_aiter(subagent, "tool_calls")
+            nested_subagent_iter = _projection_aiter(subagent, "subagents")
+            task_group.create_task(
+                _consume_subagent(
+                    subagent,
+                    message_iter=message_iter,
+                    tool_call_iter=tool_call_iter,
+                    nested_subagent_iter=nested_subagent_iter,
+                    callback=callback,
+                    name=name,
+                    path=path,
+                )
+            )
+
+
+async def _consume_subagent(
+    subagent: Any,
+    *,
+    message_iter: AsyncIterator[Any] | None,
+    tool_call_iter: AsyncIterator[Any] | None,
+    nested_subagent_iter: AsyncIterator[Any] | None,
+    callback: StreamCallbackHandler,
+    name: str | None,
+    path: str,
+) -> None:
+    status: str | None = None
+    error: str | None = None
+    try:
+        async with asyncio.TaskGroup() as task_group:
+            if message_iter is not None:
+                task_group.create_task(
+                    _consume_message_streams(
+                        message_iter,
+                        callback=callback,
+                        agent_name=name,
+                        include_in_assistant_text=False,
+                    )
+                )
+            if tool_call_iter is not None:
+                task_group.create_task(
+                    _consume_tool_call_streams(
+                        tool_call_iter,
+                        callback=callback,
+                        agent_name=name,
+                    )
+                )
+            if nested_subagent_iter is not None:
+                task_group.create_task(
+                    _consume_subagent_streams(
+                        nested_subagent_iter,
+                        callback=callback,
+                    )
+                )
+
+        await _stream_output(subagent)
+        status = getattr(subagent, "status", None) or "completed"
+        error = getattr(subagent, "error", None)
+    except BaseException as exc:
+        status = getattr(subagent, "status", None) or (
+            "cancelled" if isinstance(exc, asyncio.CancelledError) else "failed"
+        )
+        error = getattr(subagent, "error", None)
+        if error is None and not isinstance(exc, asyncio.CancelledError):
+            error = str(exc)
+        raise
+    finally:
+        callback.record_subagent_end(
+            name=name,
+            path=path,
+            status=status,
+            error=error,
+        )
+
+
+def _tool_call_name(tool_call: Any) -> str:
+    return str(
+        getattr(tool_call, "tool_name", None)
+        or getattr(tool_call, "name", None)
+        or "tool"
+    )
+
+
+def _tool_call_id(tool_call: Any, tool_name: str) -> str:
+    return str(
+        getattr(tool_call, "tool_call_id", None)
+        or getattr(tool_call, "id", None)
+        or f"{tool_name}-{id(tool_call)}"
+    )
+
+
+def _subagent_name(subagent: Any) -> str | None:
+    name = getattr(subagent, "name", None) or getattr(subagent, "graph_name", None)
+    return str(name) if name is not None else None
+
+
+def _subagent_path(subagent: Any) -> str:
+    path = getattr(subagent, "path", None) or ()
+    if isinstance(path, str):
+        return path
+    return "/".join(str(segment) for segment in path)
+
+
+def _json_text(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        return json.dumps(value, ensure_ascii=False, default=str)
+    except TypeError:
+        return str(value)
+
+
+def _stringify_stream_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    content = getattr(value, "content", None)
+    if content is not None and not isinstance(value, (dict, list)):
+        return _stringify_stream_value(content)
+    return _json_text(value)
 
 
 def _main_agent_skill_sources() -> list[str]:

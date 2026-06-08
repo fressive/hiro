@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-Hiro 是一个 AI 辅助的渗透测试和 CTF 工作流平台。它结合了 FastAPI 后端、Vue Web UI、DeepAgents/LangGraph 风格的 agent 执行、会话级文件存储、可选 RAG 上下文、MCP 工具集成，以及用于信息收集和报告生成的专用工作流 agent。
+Hiro 是一个 AI 辅助的渗透测试和 CTF 工作流平台。它结合了 FastAPI 后端、Vue Web UI、基于 DeepAgents 的 agent 执行、会话级文件存储、可选 RAG 上下文、MCP 工具集成，以及用于信息收集和报告生成的专用工作流 agent。
 
 > [!CAUTION]
 > **免责声明**
@@ -18,7 +18,7 @@ Hiro 是一个 AI 辅助的渗透测试和 CTF 工作流平台。它结合了 Fa
 
 ### Chat
 
-![Hiro Web UI，展示带有实时 assistant 输出和执行图状态的 agent session](docs/hiro-screenshot-1.png)
+![Hiro Web UI，展示带有实时 assistant 输出的 agent session](docs/hiro-screenshot-1.png)
 
 ### Token 用量统计
 
@@ -30,8 +30,8 @@ Hiro 是一个 AI 辅助的渗透测试和 CTF 工作流平台。它结合了 Fa
 .
 +-- main.py                    # FastAPI 入口
 +-- pyproject.toml             # Python 项目元数据和依赖
-+-- server/                    # API、模型、agent runtime、graph、工具、服务
-|   +-- agent/                 # Agent graph、runtime、streaming、subagents、tools
++-- server/                    # API、模型、agent runtime、工具、服务
+|   +-- agent/                 # Agent runtime、streaming、subagents、tools
 |   +-- api/v1/endpoints/      # REST 和 WebSocket endpoints
 |   +-- core/                  # Settings、security、installation、utility helpers
 |   +-- models/                # SQLAlchemy models
@@ -142,7 +142,6 @@ UI 支持的 provider 类型：
 - assistant 文本
 - 内联 tool calls
 - MCP tool events
-- 执行图节点和边的状态
 - token usage
 - 最终持久化的 messages
 

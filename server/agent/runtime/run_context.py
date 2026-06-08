@@ -1,7 +1,6 @@
 """Per-run state shared across a custom agent execution."""
 
 import asyncio
-from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -24,9 +23,6 @@ class AgentRunContext:
     # Signals the periodic assistant placeholder updater to flush and stop.
     agent_done: asyncio.Event
 
-    # Owns run-scoped async resources, especially MCP sessions.
-    exit_stack: AsyncExitStack
-
     # Background task that periodically writes live output and trace metadata
     # into the assistant placeholder.
     update_task: asyncio.Task | None = None
@@ -36,7 +32,6 @@ class AgentRunContext:
     user_msg_id: int | None = None
 
     # Runtime context prepared before invoking the main agent.
-    mcp_tools: list[Any] = field(default_factory=list)
     history_messages: list[BaseMessage] = field(default_factory=list)
     full_system_prompt: str = ""
 

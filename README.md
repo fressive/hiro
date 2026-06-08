@@ -2,7 +2,7 @@
 
 [简体中文](README_zh-CN.md)
 
-Hiro is an AI-assisted penetration testing and CTF workflow platform. It combines a FastAPI backend, a Vue web UI, DeepAgents/LangGraph-style agent execution, session-scoped file storage, optional RAG context, MCP tool integration, and specialized workflow agents for reconnaissance and writeups.
+Hiro is an AI-assisted penetration testing and CTF workflow platform. It combines a FastAPI backend, a Vue web UI, DeepAgents-based agent execution, session-scoped file storage, optional RAG context, MCP tool integration, and specialized workflow agents for reconnaissance and writeups.
 
 > [!CAUTION]
 > **Disclaimer**
@@ -18,7 +18,7 @@ The screenshots below show the current desktop Web UI. Hiro is changing quickly,
 
 ### Chat
 
-![Hiro Web UI showing an agent session with live assistant output and execution graph status](docs/hiro-screenshot-1.png)
+![Hiro Web UI showing an agent session with live assistant output](docs/hiro-screenshot-1.png)
 
 ### Token Usage Statistics
 
@@ -30,8 +30,8 @@ The screenshots below show the current desktop Web UI. Hiro is changing quickly,
 .
 +-- main.py                    # FastAPI entrypoint
 +-- pyproject.toml             # Python project metadata and dependencies
-+-- server/                    # API, models, agent runtime, graph, tools, services
-|   +-- agent/                 # Agent graph, runtime, streaming, subagents, tools
++-- server/                    # API, models, agent runtime, tools, services
+|   +-- agent/                 # Agent runtime, streaming, subagents, tools
 |   +-- api/v1/endpoints/      # REST and WebSocket endpoints
 |   +-- core/                  # Settings, security, installation, utility helpers
 |   +-- models/                # SQLAlchemy models
@@ -142,7 +142,6 @@ Open Sessions, create or select a session, choose the LLM config, enable optiona
 - assistant text
 - inline tool calls
 - MCP tool events
-- execution graph node and edge status
 - token usage
 - final persisted messages
 

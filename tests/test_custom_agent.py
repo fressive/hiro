@@ -4,6 +4,8 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from server.agent.custom_agent import CustomAgent
 from server.agent.events.streaming import AgentStreamEvent, StreamCallbackHandler
+from server.api.v1.endpoints import session as session_endpoint
+from server.models.agent import AgentSession
 from server.models.llm import LLMConfig
 from server.schemas.agent import AgentRunRequest
 
@@ -43,10 +45,6 @@ def test_custom_agent_persists_done_event(monkeypatch):
         async def update_assistant_periodically(*args):
             calls.append("start_periodic_update")
             await args[2].wait()
-
-        async def load_mcp_tools(server_names, exit_stack):
-            calls.append("load_mcp")
-            return []
 
         async def load_history(*, user_msg_id, assistant_msg_id):
             calls.append(("load_history", user_msg_id, assistant_msg_id))
@@ -93,7 +91,6 @@ def test_custom_agent_persists_done_event(monkeypatch):
             "update_assistant_periodically",
             update_assistant_periodically,
         )
-        monkeypatch.setattr("server.agent.custom_agent.load_mcp_tools", load_mcp_tools)
         monkeypatch.setattr(agent._messages, "load_history", load_history)
         monkeypatch.setattr(agent._runtime, "execute", execute)
         monkeypatch.setattr(agent._messages, "save_final_messages", save_final_messages)
@@ -108,7 +105,6 @@ def test_custom_agent_persists_done_event(monkeypatch):
 
         core_calls = [call for call in calls if call != "start_periodic_update"]
         assert core_calls == [
-            "load_mcp",
             "save_user",
             "create_assistant",
             ("load_history", 10, 20),
@@ -122,71 +118,25 @@ def test_custom_agent_persists_done_event(monkeypatch):
     asyncio.run(run_agent())
 
 
-def test_custom_agent_ignores_mcp_cleanup_error_after_done(monkeypatch):
-    async def run_agent():
-        payload = AgentRunRequest(
-            config_id=1,
-            input="scan target",
-            mcp_servers=["broken-cleanup"],
-        )
-        config = LLMConfig(provider="openai", api_key="test", model="test-model")
-        agent = CustomAgent(
-            session_id=123,
-            session_title="scan target",
-            payload=payload,
-            config=config,
-        )
+def test_session_agent_registry_reuses_agent_reference():
+    session_endpoint._drop_session_agent(123)
+    config = LLMConfig(provider="openai", api_key="test", model="test-model")
+    active_session = AgentSession(id=123, title="session")
 
-        async def save_user_message():
-            return 10
+    first = session_endpoint._get_session_agent(
+        active_session=active_session,
+        payload=AgentRunRequest(config_id=1, input="first"),
+        config=config,
+        agent_configs={},
+    )
+    second = session_endpoint._get_session_agent(
+        active_session=active_session,
+        payload=AgentRunRequest(config_id=1, input="second"),
+        config=config,
+        agent_configs={},
+    )
 
-        async def create_assistant_placeholder():
-            return 20
-
-        async def update_assistant_periodically(*args):
-            await args[2].wait()
-
-        async def load_mcp_tools(server_names, exit_stack):
-            async def cleanup():
-                raise RuntimeError("Session termination failed: 501")
-
-            exit_stack.push_async_callback(cleanup)
-            return []
-
-        async def load_history(*, user_msg_id, assistant_msg_id):
-            return []
-
-        async def execute(**kwargs):
-            return [
-                HumanMessage(content="scan target"),
-                AIMessage(content="done"),
-            ]
-
-        async def save_final_messages(**kwargs):
-            return "done"
-
-        monkeypatch.setattr(agent._messages, "save_user_message", save_user_message)
-        monkeypatch.setattr(
-            agent._messages,
-            "create_assistant_placeholder",
-            create_assistant_placeholder,
-        )
-        monkeypatch.setattr(
-            agent._messages,
-            "update_assistant_periodically",
-            update_assistant_periodically,
-        )
-        monkeypatch.setattr("server.agent.custom_agent.load_mcp_tools", load_mcp_tools)
-        monkeypatch.setattr(agent._messages, "load_history", load_history)
-        monkeypatch.setattr(agent._runtime, "execute", execute)
-        monkeypatch.setattr(agent._messages, "save_final_messages", save_final_messages)
-
-        queue: asyncio.Queue[AgentStreamEvent | None] = asyncio.Queue()
-        callback = StreamCallbackHandler(queue, asyncio.get_running_loop())
-        await agent._run_agent(queue, callback, None)
-
-        events = await _collect_until_closed(queue)
-        assert ("done", {"text": "done", "session_id": 123}) in events
-        assert [event for event in events if event[0] == "error"] == []
-
-    asyncio.run(run_agent())
+    assert first is second
+    assert second.input_text == "second"
+    assert second._runtime is first._runtime
+    session_endpoint._drop_session_agent(123)

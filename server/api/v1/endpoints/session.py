@@ -53,6 +53,7 @@ router = APIRouter()
 # Global registry for active agent tasks: session_id -> asyncio.Task
 _active_agent_tasks: dict[int, asyncio.Task] = {}
 _session_event_hubs: dict[int, SessionEventHub] = {}
+_session_agents: dict[int, CustomAgent] = {}
 
 
 def _is_session_running(session_id: int) -> bool:
@@ -77,6 +78,38 @@ def _cleanup_session_hub(session_id: int) -> None:
     hub = _session_event_hubs.get(session_id)
     if hub is not None and not hub.has_subscribers and not _is_session_running(session_id):
         _session_event_hubs.pop(session_id, None)
+
+
+def _get_session_agent(
+    *,
+    active_session: AgentSession,
+    payload: AgentRunRequest,
+    config: LLMConfig,
+    agent_configs: dict[str, LLMConfig],
+) -> CustomAgent:
+    agent = _session_agents.get(active_session.id)
+    if agent is None:
+        agent = CustomAgent(
+            session_id=active_session.id,
+            session_title=active_session.title,
+            payload=payload,
+            config=config,
+            agent_configs=agent_configs,
+        )
+        _session_agents[active_session.id] = agent
+        return agent
+
+    agent.configure_run(
+        session_title=active_session.title,
+        payload=payload,
+        config=config,
+        agent_configs=agent_configs,
+    )
+    return agent
+
+
+def _drop_session_agent(session_id: int) -> None:
+    _session_agents.pop(session_id, None)
 
 
 async def _bridge_agent_events(
@@ -202,9 +235,8 @@ async def _start_agent_run(
         raise HTTPException(status_code=404, detail="LLM config not found")
     agent_llm_configs = await _load_agent_llm_configs(payload.agent_configs, session)
 
-    custom_agent = CustomAgent(
-        session_id=active_session_id,
-        session_title=active_session.title,
+    custom_agent = _get_session_agent(
+        active_session=active_session,
         payload=payload,
         config=config,
         agent_configs=agent_llm_configs,
@@ -579,6 +611,7 @@ async def delete_session(session_id: int, session: AsyncSession = Depends(get_se
     hub = _session_event_hubs.pop(session_id, None)
     if hub is not None:
         await hub.close()
+    _drop_session_agent(session_id)
 
     # Delete the data folder if it exists
     data_path = get_data_path(session_id)

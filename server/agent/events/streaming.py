@@ -22,8 +22,12 @@ def stream_event(event: str, data: dict[str, Any]) -> AgentStreamEvent:
     return AgentStreamEvent(event=event, data=data)
 
 
+def is_mcp_tool_name(tool_name: str) -> bool:
+    return tool_name.startswith("mcp__") or tool_name in {"mcp_search", "mcp_call"}
+
+
 def tool_event_name(tool_name: str, phase: str) -> str:
-    if tool_name.startswith("mcp__"):
+    if is_mcp_tool_name(tool_name):
         return f"mcp_{phase}"
     return f"tool_{phase}"
 
@@ -159,7 +163,7 @@ class StreamCallbackHandler(BaseCallbackHandler):
         self._usage = dict(snapshot.get("usage", token_usage.empty_token_usage()))
 
     def _event_collection(self, tool_name: str) -> list[dict[str, Any]]:
-        if tool_name.startswith("mcp__"):
+        if is_mcp_tool_name(tool_name):
             return self._mcp_events
         return self._tool_events
 
@@ -180,8 +184,33 @@ class StreamCallbackHandler(BaseCallbackHandler):
             segments = stream_text_segments(message)
 
         for segment_type, text in segments:
+            self.record_token(text, segment_type=segment_type)
+
+    def record_token(
+        self,
+        text: str,
+        *,
+        segment_type: str = "text",
+        agent_name: str | None = None,
+        include_in_assistant_text: bool = True,
+    ) -> None:
+        """Record a streamed text delta from event streaming."""
+
+        if not text:
+            return
+        if include_in_assistant_text:
             self._token_buffer.append(text)
             self._enqueue("token", {"text": text, "type": segment_type})
+            return
+
+        self._enqueue(
+            "subagent_token",
+            {
+                "agent": agent_name,
+                "text": text,
+                "type": segment_type,
+            },
+        )
 
     @property
     def token_text(self) -> str:
@@ -189,6 +218,12 @@ class StreamCallbackHandler(BaseCallbackHandler):
 
     def on_llm_end(self, response: Any, **kwargs: Any) -> None:
         usage = token_usage.llm_result_token_usage(response)
+        self.record_token_usage(usage)
+
+    def record_token_usage(self, usage: Any) -> None:
+        """Record token usage from a streamed message output."""
+
+        usage = token_usage.normalize_token_usage(usage)
         if not token_usage.has_token_usage(usage):
             return
 
@@ -203,60 +238,149 @@ class StreamCallbackHandler(BaseCallbackHandler):
 
     def on_tool_start(self, serialized: dict, input_str: str, **kwargs: Any) -> None:
         tool_name = serialized.get("name") or "tool"
-        if tool_name.startswith("mcp__"):
-            self._mcp_names.append(tool_name)
-        else:
-            self._tool_names.append(tool_name)
-
         run_id = str(
             kwargs.get("run_id")
             or f"{tool_name}-{len(self._tool_events) + len(self._mcp_events) + 1}"
         )
-        self._tool_run_map[run_id] = tool_name
-        self._upsert_tool_event(
-            tool_name,
-            {
-                "id": run_id,
-                "name": tool_name,
-                "status": "running",
-                "input": str(input_str),
-            },
-        )
-        self._enqueue(
-            tool_event_name(tool_name, "start"),
-            {"id": run_id, "name": tool_name, "input": str(input_str)},
+        self.record_tool_start(
+            tool_name=tool_name,
+            event_id=run_id,
+            input_text=str(input_str),
         )
 
     def on_tool_end(self, output: Any, **kwargs: Any) -> None:
         run_id = str(kwargs.get("run_id", ""))
         tool_name = self._tool_run_map.get(run_id, "tool")
-        self._upsert_tool_event(
-            tool_name,
-            {
-                "id": run_id,
-                "name": tool_name,
-                "status": "done",
-                "output": str(output),
-            },
-        )
-        self._enqueue(
-            tool_event_name(tool_name, "end"),
-            {"id": run_id, "name": tool_name, "output": str(output)},
+        self.record_tool_end(
+            tool_name=tool_name,
+            event_id=run_id,
+            output_text=str(output),
         )
 
     def on_tool_error(self, error: BaseException, **kwargs: Any) -> None:
         run_id = str(kwargs.get("run_id", ""))
         tool_name = self._tool_run_map.get(run_id, "tool")
-        self._upsert_tool_event(
-            tool_name,
-            {
-                "id": run_id,
-                "name": tool_name,
-                "status": "error",
-                "output": str(error),
-            },
+        self.record_tool_error(
+            tool_name=tool_name,
+            event_id=run_id,
+            output_text=str(error),
+        )
+
+    def record_tool_start(
+        self,
+        *,
+        tool_name: str,
+        event_id: str,
+        input_text: str,
+        agent_name: str | None = None,
+    ) -> None:
+        """Record a tool start event from callbacks or event streaming."""
+
+        if is_mcp_tool_name(tool_name):
+            self._mcp_names.append(tool_name)
+        else:
+            self._tool_names.append(tool_name)
+
+        self._tool_run_map[event_id] = tool_name
+        event = {
+            "id": event_id,
+            "name": tool_name,
+            "status": "running",
+            "input": input_text,
+        }
+        if agent_name:
+            event["agent"] = agent_name
+        self._upsert_tool_event(tool_name, event)
+
+        data = {"id": event_id, "name": tool_name, "input": input_text}
+        if agent_name:
+            data["agent"] = agent_name
+        self._enqueue(tool_event_name(tool_name, "start"), data)
+
+    def record_tool_end(
+        self,
+        *,
+        tool_name: str,
+        event_id: str,
+        output_text: str,
+        agent_name: str | None = None,
+    ) -> None:
+        """Record a tool completion event from callbacks or event streaming."""
+
+        event = {
+            "id": event_id,
+            "name": tool_name,
+            "status": "done",
+            "output": output_text,
+        }
+        if agent_name:
+            event["agent"] = agent_name
+        self._upsert_tool_event(tool_name, event)
+
+        data = {"id": event_id, "name": tool_name, "output": output_text}
+        if agent_name:
+            data["agent"] = agent_name
+        self._enqueue(tool_event_name(tool_name, "end"), data)
+
+    def record_tool_error(
+        self,
+        *,
+        tool_name: str,
+        event_id: str,
+        output_text: str,
+        agent_name: str | None = None,
+    ) -> None:
+        """Record a tool error event from callbacks or event streaming."""
+
+        event = {
+            "id": event_id,
+            "name": tool_name,
+            "status": "error",
+            "output": output_text,
+        }
+        if agent_name:
+            event["agent"] = agent_name
+        self._upsert_tool_event(tool_name, event)
+
+        data = {"id": event_id, "name": tool_name, "output": output_text}
+        if agent_name:
+            data["agent"] = agent_name
+        self._enqueue(tool_event_name(tool_name, "error"), data)
+
+    def record_subagent_start(
+        self,
+        *,
+        name: str | None,
+        path: str,
+        task_input: str | None,
+    ) -> None:
+        self._enqueue(
+            "subagent_start",
+            {"name": name, "path": path, "input": task_input},
         )
         self._enqueue(
-            tool_event_name(tool_name, "error"),
-            {"id": run_id, "name": tool_name, "output": str(error)},
+            "subagent_status",
+            {
+                "name": name,
+                "path": path,
+                "status": "started",
+                "input": task_input,
+            },
+        )
+
+    def record_subagent_end(
+        self,
+        *,
+        name: str | None,
+        path: str,
+        status: str | None,
+        error: str | None = None,
+    ) -> None:
+        self._enqueue(
+            "subagent_end",
+            {"name": name, "path": path, "status": status, "error": error},
+        )
+        self._enqueue(
+            "subagent_status",
+            {"name": name, "path": path, "status": status, "error": error},
         )

@@ -1,7 +1,7 @@
 """Session-scoped agent runner with persistence and token accounting."""
 
 import asyncio
-from contextlib import AsyncExitStack, suppress
+from contextlib import suppress
 from typing import Any, Callable
 
 from langchain_core.messages import AIMessage, BaseMessage
@@ -13,7 +13,6 @@ from server.agent.events.streaming import (
 )
 from server.agent.persistence.message_store import AgentMessageStore
 from server.agent.runtime.agent_runtime import AgentRuntime
-from server.agent.runtime.mcp_loader import load_mcp_tools
 from server.agent.runtime.run_context import AgentRunContext
 from server.agent.utils.tool_call_ids import normalize_ai_message_tool_call_ids
 from server.core.logger import logger
@@ -60,6 +59,36 @@ class CustomAgent:
             agent_configs=self.agent_configs,
         )
 
+    def configure_run(
+        self,
+        *,
+        session_title: str | None,
+        payload: AgentRunRequest,
+        config: LLMConfig,
+        agent_configs: dict[str, LLMConfig] | None = None,
+    ) -> None:
+        """Update run-specific settings while keeping this session agent."""
+
+        self.session_title = session_title
+        self.payload = payload
+        self.config = config
+        self.agent_configs = agent_configs or {}
+        self.input_text = payload.input.strip()
+        self.rag_context = ""
+        self.rag_sources = []
+        self._rag_loaded = False
+        self._runtime.configure_run(
+            input_text=self.input_text,
+            payload=payload,
+            config=config,
+            agent_configs=self.agent_configs,
+        )
+        self._messages = AgentMessageStore(
+            session_id=self.session_id,
+            input_text=self.input_text,
+            model=self.agent_model_names()[MAIN_AGENT_NAME],
+        )
+
     async def start(
         self,
         queue: asyncio.Queue[AgentStreamEvent | None],
@@ -95,18 +124,10 @@ class CustomAgent:
     ) -> None:
         run_context: AgentRunContext | None = None
         try:
-            exit_stack = AsyncExitStack()
             run_context = AgentRunContext(
                 queue=queue,
                 callback=callback,
                 agent_done=asyncio.Event(),
-                exit_stack=exit_stack,
-            )
-            # MCP sessions use anyio cancel scopes; enter and exit them in this
-            # runner task so cleanup happens in the same async context.
-            run_context.mcp_tools = await load_mcp_tools(
-                self.payload.mcp_servers,
-                exit_stack,
             )
             await self._execute_run(run_context)
 
@@ -124,7 +145,6 @@ class CustomAgent:
             )
         finally:
             if run_context is not None:
-                await self._close_mcp_sessions(run_context)
                 run_context.agent_done.set()
             update_task = run_context.update_task if run_context is not None else None
             if update_task and not update_task.done():
@@ -151,14 +171,13 @@ class CustomAgent:
             user_msg_id=run.user_msg_id,
             assistant_msg_id=run.assistant_msg_id,
         )
-        run.full_system_prompt = self._runtime.build_system_prompt(
-            mcp_tools=run.mcp_tools,
-            rag_context=self.rag_context,
-        )
+        run.full_system_prompt = self._runtime.build_system_prompt()
         run.all_messages = await self._runtime.execute(
             history_messages=run.history_messages,
-            mcp_tools=run.mcp_tools,
             full_system_prompt=run.full_system_prompt,
+            run_context_prompt=self._runtime.build_run_context_prompt(
+                rag_context=self.rag_context,
+            ),
             callback=run.callback,
         )
         _tag_new_ai_messages(
@@ -217,16 +236,6 @@ class CustomAgent:
             WRITEUP_AGENT_NAME: self._runtime.agent_model_name(WRITEUP_AGENT_NAME),
         }
 
-    async def _close_mcp_sessions(self, run: AgentRunContext) -> None:
-        try:
-            await run.exit_stack.aclose()
-        except Exception as exc:
-            logger.warning(
-                "MCP session cleanup failed for session %s: %s",
-                self.session_id,
-                _exception_message(exc),
-            )
-
     async def _load_rag_context(self) -> None:
         if self._rag_loaded or not self.payload.enable_rag:
             self._rag_loaded = True
@@ -251,20 +260,6 @@ class CustomAgent:
             )
         finally:
             self._rag_loaded = True
-
-
-def _exception_message(error: BaseException) -> str:
-    if isinstance(error, BaseExceptionGroup):
-        child_messages = [
-            _exception_message(child)
-            for child in error.exceptions
-        ]
-        detail = "; ".join(message for message in child_messages if message)
-        summary = str(error) or error.__class__.__name__
-        if detail and detail not in summary:
-            return f"{summary}: {detail}"
-        return summary
-    return str(error) or error.__class__.__name__
 
 
 def _tag_new_ai_messages(
