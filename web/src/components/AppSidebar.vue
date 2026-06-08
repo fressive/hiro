@@ -3,7 +3,6 @@ import {
   LayoutDashboard,
   Bot,
   Database,
-  Wrench,
   Blocks,
   Key,
   User,
@@ -11,7 +10,6 @@ import {
   LogOut,
   Moon,
   Sun,
-  BotMessageSquare,
   MessageCircle,
 } from '@lucide/vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
