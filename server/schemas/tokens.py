@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class APITokenBase(BaseModel):
@@ -21,12 +21,11 @@ class APITokenCreate(APITokenBase):
 class APITokenResponse(APITokenBase):
     """API token response schema (for listing)."""
 
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     created_at: datetime
     last_used_at: Optional[datetime] = None
-
-    class Config:
-        from_attributes = True
 
 
 class APITokenCreated(APITokenResponse):

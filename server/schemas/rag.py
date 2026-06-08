@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class RagDocumentBase(BaseModel):
@@ -23,14 +23,12 @@ class RagDocumentCreate(RagDocumentBase):
 class RagDocumentResponse(RagDocumentBase):
     """RAG document response schema."""
 
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     status: str
     chunks: int
     updated_at: datetime
-
-    class Config:
-        from_attributes = True
-
 
 class RagEmbeddingConfigUpdate(BaseModel):
     """RAG embedding configuration update schema."""
@@ -49,6 +47,8 @@ class RagEmbeddingConfigUpdate(BaseModel):
 class RagEmbeddingConfigResponse(BaseModel):
     """RAG embedding configuration response schema."""
 
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     provider: str
     api_endpoint: str
@@ -59,10 +59,6 @@ class RagEmbeddingConfigResponse(BaseModel):
     batch_size: int
     normalize: bool
     has_token: bool
-
-    class Config:
-        from_attributes = True
-
 
 class RagEmbeddingTestRequest(BaseModel):
     """RAG embedding test request schema."""
@@ -94,6 +90,8 @@ class RagVectorStoreConfigUpdate(BaseModel):
 class RagVectorStoreConfigResponse(BaseModel):
     """RAG vector store configuration response schema."""
 
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     provider: str
     data_source: str
@@ -101,10 +99,6 @@ class RagVectorStoreConfigResponse(BaseModel):
     db_name: Optional[str] = None
     collection_name: str
     has_token: bool
-
-    class Config:
-        from_attributes = True
-
 
 class RagVectorStoreTestRequest(BaseModel):
     """RAG vector store test request schema."""

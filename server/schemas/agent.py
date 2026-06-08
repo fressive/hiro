@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class AgentRunRequest(BaseModel):
@@ -53,6 +53,8 @@ class AgentSessionUpdate(BaseModel):
 class AgentSessionResponse(BaseModel):
     """Agent session response schema."""
 
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     title: Optional[str] = None
     config_id: Optional[int] = None
@@ -66,10 +68,6 @@ class AgentSessionResponse(BaseModel):
     agent_configs: Optional[Dict[str, Optional[int]]] = None
     created_at: datetime
     updated_at: datetime
-
-    class Config:
-        from_attributes = True
-
 
 class AgentSessionTemplateCreate(BaseModel):
     """Agent session settings template creation schema."""
@@ -104,6 +102,8 @@ class AgentSessionTemplateUpdate(BaseModel):
 class AgentSessionTemplateResponse(BaseModel):
     """Agent session settings template response schema."""
 
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     name: str
     config_id: Optional[int] = None
@@ -118,12 +118,10 @@ class AgentSessionTemplateResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
-
-
 class AgentMessageResponse(BaseModel):
     """Agent message response schema."""
+
+    model_config = ConfigDict(from_attributes=True)
 
     id: int
     session_id: int
@@ -138,10 +136,6 @@ class AgentMessageResponse(BaseModel):
     output_tokens: Optional[int] = None
     model: Optional[str] = None
     created_at: datetime
-
-    class Config:
-        from_attributes = True
-
 
 class SessionFileResponse(BaseModel):
     """Session file response schema."""

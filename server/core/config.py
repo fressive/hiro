@@ -1,10 +1,12 @@
 """Application configuration."""
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """Application settings."""
+
+    model_config = SettingsConfigDict(env_file=".env")
 
     project_name: str = "Hiro API"
     project_description: str = "A scalable FastAPI application"
@@ -22,8 +24,5 @@ class Settings(BaseSettings):
     
     # Database (for future use)
     database_url: str = "sqlite:///./hiro.db"
-
-    class Config:
-        env_file = ".env"
 
 settings = Settings()

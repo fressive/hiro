@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class UserBase(BaseModel):
@@ -21,7 +21,6 @@ class UserCreate(UserBase):
 class UserResponse(UserBase):
     """User response schema."""
 
-    id: Optional[int] = None
+    model_config = ConfigDict(from_attributes=True)
 
-    class Config:
-        from_attributes = True
+    id: Optional[int] = None
