@@ -408,6 +408,16 @@ def test_agent_runtime_consumes_deepagent_event_stream(monkeypatch):
     assert callback.mcp_events[0]["name"] == "mcp_call"
     assert callback.tool_events[0]["name"] == "feroxbuster"
     assert callback.tool_events[0]["agent"] == "writeup_agent"
+    assert callback.subagent_events == [
+        {
+            "id": "tools:1",
+            "name": "writeup_agent",
+            "path": "tools:1",
+            "status": "done",
+            "input": "draft report",
+            "error": None,
+        }
+    ]
     assert "subagent_start" in event_names
     assert "subagent_end" in event_names
     assert "subagent_token" in event_names

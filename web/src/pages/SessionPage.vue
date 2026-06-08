@@ -24,6 +24,7 @@ import type {
   LLMConfig,
   Tool,
   EventRecord,
+  SubagentEventRecord,
   AgentSession,
   AgentSessionTemplate,
   MCPServer,
@@ -32,6 +33,7 @@ import type {
 import MessageItem from '@/components/agent/MessageItem.vue'
 import AgentSettings from '@/components/agent/AgentSettings.vue'
 import ActiveResponse from '@/components/agent/ActiveResponse.vue'
+import AgentCallGraph from '@/components/agent/AgentCallGraph.vue'
 import SessionList from '@/components/agent/SessionList.vue'
 import FileList from '@/components/agent/FileList.vue'
 import { LineChart } from '@/components/ui/chart'
@@ -56,6 +58,7 @@ const liveTokenUsage = ref({
 })
 const toolEvents = ref<EventRecord[]>([])
 const mcpEvents = ref<EventRecord[]>([])
+const subagentEvents = ref<SubagentEventRecord[]>([])
 const agentConfigs = ref<Record<string, number | null>>({})
 const ragSources = ref<string[]>([])
 const sessions = ref<AgentSession[]>([])
@@ -84,6 +87,7 @@ let liveSnapshots: Record<string, {
   output: any[]
   toolEvents: EventRecord[]
   mcpEvents: EventRecord[]
+  subagentEvents: SubagentEventRecord[]
   liveTokenUsage: {
     input_tokens: number
     cached_input_tokens: number
@@ -192,6 +196,7 @@ const hasTraceMetadata = (message: AgentMessage) => {
   return Boolean(
     metadata?.tool_events?.length
     || metadata?.mcp_events?.length
+    || metadata?.subagent_events?.length
   )
 }
 
@@ -209,6 +214,7 @@ const hasLiveResponseActivity = computed(() => (
   || output.value.length > 0
   || toolEvents.value.length > 0
   || mcpEvents.value.length > 0
+  || subagentEvents.value.length > 0
 ))
 
 const isActiveAssistantDraft = (message: AgentMessage) => {
@@ -290,6 +296,24 @@ const displayMessages = computed(() => {
     content: draft,
     created_at: new Date().toISOString(),
   })
+})
+
+const latestPersistedSubagentEvents = computed<SubagentEventRecord[]>(() => {
+  for (let index = messages.value.length - 1; index >= 0; index -= 1) {
+    const message = messages.value[index]
+    const events = message.extra_metadata?.subagent_events
+    if (message.role === 'assistant' && events?.length) {
+      return events
+    }
+  }
+  return []
+})
+
+const visibleSubagentEvents = computed(() => {
+  if (isRunning.value || subagentEvents.value.length > 0) {
+    return subagentEvents.value
+  }
+  return latestPersistedSubagentEvents.value
 })
 
 const scrollResponseToBottom = async () => {
@@ -832,6 +856,7 @@ const clearLiveResponse = () => {
   output.value = []
   toolEvents.value = []
   mcpEvents.value = []
+  subagentEvents.value = []
   liveTokenUsage.value = {
     input_tokens: 0,
     cached_input_tokens: 0,
@@ -863,11 +888,30 @@ const appendLiveToolBlock = (eventKind: 'tool' | 'mcp', eventId: string) => {
 
 const cloneLiveOutput = () => output.value.map((block) => ({ ...block }))
 const cloneEvents = (events: EventRecord[]) => events.map((event) => ({ ...event }))
+const cloneSubagentEvents = (events: SubagentEventRecord[]) => events.map((event) => ({ ...event }))
 const normalizeLiveTokenUsage = (usage: any) => ({
   input_tokens: Number(usage?.input_tokens || 0),
   cached_input_tokens: Number(usage?.cached_input_tokens || 0),
   output_tokens: Number(usage?.output_tokens || 0),
 })
+
+const normalizeSubagentStatus = (status: any) => {
+  if (status === 'started') return 'running'
+  if (status === 'completed') return 'done'
+  if (status === 'failed') return 'error'
+  return status || 'running'
+}
+
+const upsertSubagentEvent = (incoming: SubagentEventRecord) => {
+  const eventId = incoming.id || incoming.path || incoming.name || crypto.randomUUID()
+  const nextEvent = { ...incoming, id: eventId, path: incoming.path || eventId }
+  const index = subagentEvents.value.findIndex((item) => item.id === eventId)
+  if (index >= 0) {
+    subagentEvents.value[index] = { ...subagentEvents.value[index], ...nextEvent }
+  } else {
+    subagentEvents.value.push(nextEvent)
+  }
+}
 
 const applyEvent = (event: string, payload: any) => {
   if (event === 'live_checkpoint') {
@@ -876,6 +920,7 @@ const applyEvent = (event: string, payload: any) => {
       output: cloneLiveOutput(),
       toolEvents: cloneEvents(toolEvents.value),
       mcpEvents: cloneEvents(mcpEvents.value),
+      subagentEvents: cloneSubagentEvents(subagentEvents.value),
       liveTokenUsage: { ...liveTokenUsage.value },
     }
     return
@@ -888,6 +933,7 @@ const applyEvent = (event: string, payload: any) => {
       output.value = snapshot.output.map((block) => ({ ...block }))
       toolEvents.value = cloneEvents(snapshot.toolEvents)
       mcpEvents.value = cloneEvents(snapshot.mcpEvents)
+      subagentEvents.value = cloneSubagentEvents(snapshot.subagentEvents)
       liveTokenUsage.value = { ...snapshot.liveTokenUsage }
     }
     delete liveSnapshots[checkpointId]
@@ -980,6 +1026,43 @@ const applyEvent = (event: string, payload: any) => {
     } else {
       clearLiveResponse()
     }
+    return
+  }
+
+  if (event === 'subagent_start') {
+    const eventId = payload.path || payload.name || crypto.randomUUID()
+    upsertSubagentEvent({
+      id: eventId,
+      name: payload.name || 'subagent',
+      path: payload.path || eventId,
+      status: 'running',
+      input: payload.input,
+    })
+    return
+  }
+
+  if (event === 'subagent_status') {
+    const eventId = payload.path || payload.name || crypto.randomUUID()
+    upsertSubagentEvent({
+      id: eventId,
+      name: payload.name || 'subagent',
+      path: payload.path || eventId,
+      status: normalizeSubagentStatus(payload.status),
+      input: payload.input,
+      error: payload.error,
+    })
+    return
+  }
+
+  if (event === 'subagent_end') {
+    const eventId = payload.path || payload.name || crypto.randomUUID()
+    upsertSubagentEvent({
+      id: eventId,
+      name: payload.name || 'subagent',
+      path: payload.path || eventId,
+      status: normalizeSubagentStatus(payload.status),
+      error: payload.error,
+    })
     return
   }
 
@@ -1234,9 +1317,16 @@ watch(
         <div v-else class="relative h-full min-h-0 overflow-hidden">
           <template v-if="innerTab === 'chat'">
             <div
-              class="session-chat-layout flex h-full min-h-0 flex-col overflow-hidden"
+              class="session-chat-layout flex h-full min-h-0 flex-col overflow-hidden xl:flex-row"
             >
-              <div class="flex min-h-0 flex-col overflow-hidden">
+              <aside class="h-56 shrink-0 overflow-hidden border-b xl:h-full xl:w-72 xl:border-b-0 xl:border-r 2xl:w-80">
+                <AgentCallGraph
+                  :subagent-events="visibleSubagentEvents"
+                  :is-running="isRunning"
+                />
+              </aside>
+
+              <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
                 <div class="min-h-0 flex-1 overflow-hidden">
                   <div ref="responseScroll" class="h-full overflow-auto px-1">
                     <div class="mx-auto flex min-h-full max-w-4xl flex-col py-4">

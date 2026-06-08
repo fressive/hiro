@@ -110,7 +110,10 @@ def test_custom_agent_persists_done_event(monkeypatch):
             ("load_history", 10, 20),
             "execute",
             ("save_final", 20),
-            ("run_metadata", {"tool_events": [], "mcp_events": []}),
+            (
+                "run_metadata",
+                {"tool_events": [], "mcp_events": [], "subagent_events": []},
+            ),
             ("saved_agents", ["main_agent"]),
         ]
         assert "start_periodic_update" in calls

@@ -22,6 +22,7 @@ def attach_trace_metadata_fallback(messages: list[AgentMessage]) -> None:
         and (
             message.extra_metadata.get("tool_events")
             or message.extra_metadata.get("mcp_events")
+            or message.extra_metadata.get("subagent_events")
         )
         for message in assistant_messages
     ):
@@ -40,6 +41,7 @@ def attach_trace_metadata_fallback(messages: list[AgentMessage]) -> None:
         **(target.extra_metadata or {}),
         "tool_events": tool_events,
         "mcp_events": [],
+        "subagent_events": [],
     }
 
 
@@ -86,6 +88,7 @@ def has_trace_metadata(message: AgentMessage) -> bool:
         and (
             metadata.get("tool_events")
             or metadata.get("mcp_events")
+            or metadata.get("subagent_events")
         )
     )
 
@@ -104,7 +107,7 @@ def trace_message_score(message: AgentMessage) -> int:
 
 def clear_trace_metadata(message: AgentMessage) -> None:
     metadata = dict(message.extra_metadata or {})
-    for key in ("tool_events", "mcp_events"):
+    for key in ("tool_events", "mcp_events", "subagent_events"):
         metadata.pop(key, None)
     message.extra_metadata = metadata or None
 

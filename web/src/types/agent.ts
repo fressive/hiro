@@ -17,6 +17,16 @@ export type EventRecord = {
   status: 'running' | 'done' | 'error'
   input?: string
   output?: string
+  agent?: string
+}
+
+export type SubagentEventRecord = {
+  id: string
+  name?: string | null
+  path: string
+  status: 'running' | 'done' | 'error' | 'completed' | 'failed' | 'cancelled' | string
+  input?: string | null
+  error?: string | null
 }
 
 export type AgentSession = {
@@ -76,6 +86,7 @@ export type AgentMessage = {
     rag_sources?: string[]
     tool_events?: EventRecord[]
     mcp_events?: EventRecord[]
+    subagent_events?: SubagentEventRecord[]
   }
   input_tokens?: number
   cached_input_tokens?: number

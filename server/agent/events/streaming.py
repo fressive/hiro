@@ -101,6 +101,7 @@ class StreamCallbackHandler(BaseCallbackHandler):
         self._tool_run_map: dict[str, str] = {}
         self._tool_events: list[dict[str, Any]] = []
         self._mcp_events: list[dict[str, Any]] = []
+        self._subagent_events: list[dict[str, Any]] = []
         self._token_buffer: list[str] = []
         self._usage: dict[str, int] = token_usage.empty_token_usage()
 
@@ -124,6 +125,10 @@ class StreamCallbackHandler(BaseCallbackHandler):
     def mcp_events(self) -> list[dict[str, Any]]:
         return [dict(event) for event in self._mcp_events]
 
+    @property
+    def subagent_events(self) -> list[dict[str, Any]]:
+        return [dict(event) for event in self._subagent_events]
+
     def _enqueue(self, event: str, data: dict) -> None:
         asyncio.run_coroutine_threadsafe(
             self._queue.put(stream_event(event, data)), self._loop
@@ -143,6 +148,7 @@ class StreamCallbackHandler(BaseCallbackHandler):
             "tool_run_map": dict(self._tool_run_map),
             "tool_events": [dict(event) for event in self._tool_events],
             "mcp_events": [dict(event) for event in self._mcp_events],
+            "subagent_events": [dict(event) for event in self._subagent_events],
             "token_buffer": list(self._token_buffer),
             "usage": dict(self._usage),
         }
@@ -158,6 +164,9 @@ class StreamCallbackHandler(BaseCallbackHandler):
         ]
         self._mcp_events = [
             dict(event) for event in snapshot.get("mcp_events", [])
+        ]
+        self._subagent_events = [
+            dict(event) for event in snapshot.get("subagent_events", [])
         ]
         self._token_buffer = list(snapshot.get("token_buffer", []))
         self._usage = dict(snapshot.get("usage", token_usage.empty_token_usage()))
@@ -175,6 +184,14 @@ class StreamCallbackHandler(BaseCallbackHandler):
                 events[index] = {**existing, **event}
                 return
         events.append(event)
+
+    def _upsert_subagent_event(self, event: dict[str, Any]) -> None:
+        event_id = event["id"]
+        for index, existing in enumerate(self._subagent_events):
+            if existing["id"] == event_id:
+                self._subagent_events[index] = {**existing, **event}
+                return
+        self._subagent_events.append(event)
 
     def on_llm_new_token(self, token: Any, **kwargs: Any) -> None:
         segments = stream_text_segments(token)
@@ -354,6 +371,14 @@ class StreamCallbackHandler(BaseCallbackHandler):
         path: str,
         task_input: str | None,
     ) -> None:
+        event = {
+            "id": path or name or f"subagent-{len(self._subagent_events) + 1}",
+            "name": name,
+            "path": path,
+            "status": "running",
+            "input": task_input,
+        }
+        self._upsert_subagent_event(event)
         self._enqueue(
             "subagent_start",
             {"name": name, "path": path, "input": task_input},
@@ -376,6 +401,20 @@ class StreamCallbackHandler(BaseCallbackHandler):
         status: str | None,
         error: str | None = None,
     ) -> None:
+        event = {
+            "id": path or name or f"subagent-{len(self._subagent_events) + 1}",
+            "name": name,
+            "path": path,
+            "status": (
+                "done"
+                if status == "completed"
+                else "error"
+                if status == "failed"
+                else status
+            ),
+            "error": error,
+        }
+        self._upsert_subagent_event(event)
         self._enqueue(
             "subagent_end",
             {"name": name, "path": path, "status": status, "error": error},

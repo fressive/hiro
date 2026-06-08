@@ -225,6 +225,7 @@ class CustomAgent:
         return {
             "tool_events": run.callback.tool_events,
             "mcp_events": run.callback.mcp_events,
+            "subagent_events": run.callback.subagent_events,
         }
 
     def agent_model_names(self) -> dict[str, str]:
