@@ -11,7 +11,7 @@ import APITokenPage from '@/pages/APITokenPage.vue'
 import { apiFetch } from '@/lib/api'
 
 type InstallationStatus = {
-  installed: boolean
+  installed: boolean | null
 }
 
 let installationStatusPromise: Promise<InstallationStatus> | null = null
@@ -24,9 +24,15 @@ async function getInstallationStatus() {
           throw new Error(`Failed to fetch installation status: ${response.status}`)
         }
 
-        return response.json() as Promise<InstallationStatus>
+        const data = await response.json()
+        return {
+          installed: typeof data?.installed === 'boolean' ? data.installed : null,
+        }
       })
-      .catch(() => ({ installed: false }))
+      .catch(() => {
+        installationStatusPromise = null
+        return { installed: null }
+      })
   }
 
   return installationStatusPromise
@@ -86,12 +92,11 @@ export const router = createRouter({
 router.beforeEach(async (to) => {
   const { installed } = await getInstallationStatus()
 
-  if (!installed && to.name !== 'installment')
+  if (installed === false && to.name !== 'installment')
     return { name: 'installment' }
 
-  if (installed && to.name === 'installment')
+  if (installed === true && to.name === 'installment')
     return { name: 'app' }
 
   return true
 })
-
