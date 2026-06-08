@@ -32,7 +32,8 @@ WRITEUP_INTENT_KEYWORDS = (
 WRITEUP_SYSTEM_PROMPT = """You are a writeup subagent.
 
 Generate a concise Markdown penetration-test report from the prior steps,
-conversation, tool outputs, and final assistant result provided by the graph.
+conversation, tool outputs, and final assistant result provided by the calling
+agent.
 
 Requirements:
 - Base the report only on provided evidence. Do not invent findings, flags, or exploitation results.
@@ -40,6 +41,7 @@ Requirements:
 - If evidence is incomplete, say what is missing and mark the finding as unverified.
 - Include these sections when applicable: Summary, Scope, Steps Performed, Findings, Evidence, Impact, Recommendations, Artifacts, and Next Steps.
 - If a flag or proof value is present in the evidence, include it explicitly. If none is present, write "Flag: Not found".
+- Save the final report to WRITEUP.md in the working directory.
 - Return only the report Markdown, with no preamble."""
 WRITEUP_AGENT_NAME = "writeup_agent"
 

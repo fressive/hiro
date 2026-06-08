@@ -7,7 +7,7 @@ from server.models.llm import LLMConfig
 from server.schemas.agent import AgentRunRequest
 
 
-def test_agent_runtime_informs_main_agent_about_workflow_subagents(monkeypatch):
+def test_agent_runtime_registers_specialized_deepagent_subagents(monkeypatch):
     captured = {}
     build_llm_calls = []
 
@@ -52,20 +52,28 @@ def test_agent_runtime_informs_main_agent_about_workflow_subagents(monkeypatch):
     subagents = {subagent["name"]: subagent for subagent in captured["subagents"]}
     permissions = captured["permissions"]
     assert result[-1].content == "done"
-    assert "Workflow Subagent Delegation" in captured["system_prompt"]
-    assert "The graph owns" in captured["system_prompt"]
-    assert "specialized workflow subagents" in captured["system_prompt"]
+    assert "DeepAgent Subagent Delegation" in captured["system_prompt"]
+    assert "Specialized DeepAgent subagents" in captured["system_prompt"]
     assert "`writeup_agent`" in captured["system_prompt"]
     assert "`information_collect_agent`" in captured["system_prompt"]
-    assert "do not draft" in captured["system_prompt"]
-    assert "Do not call the `task` tool with `writeup_agent`" in captured["system_prompt"]
-    assert "writeup_agent" not in subagents
-    assert "information_collect_agent" not in subagents
+    assert "call `task`" in captured["system_prompt"]
     assert "general-purpose" in subagents
+    assert "writeup_agent" in subagents
+    assert "information_collect_agent" in subagents
+    assert subagents["information_collect_agent"]["model"] == (
+        "model:information_collect_agent"
+    )
+    assert subagents["information_collect_agent"]["tools"][0].name == "feroxbuster"
+    assert subagents["writeup_agent"]["model"] == "model:writeup_agent"
+    assert subagents["writeup_agent"]["tools"] == []
     assert permissions[0].mode == "deny"
     assert permissions[0].operations == ["write"]
     assert "/skills/**" in permissions[0].paths
-    assert build_llm_calls == [("main_agent", {"streaming": True})]
+    assert build_llm_calls == [
+        ("main_agent", {"streaming": True}),
+        ("information_collect_agent", {}),
+        ("writeup_agent", {}),
+    ]
 
 
 def test_agent_runtime_retries_retryable_stream_errors(monkeypatch):
@@ -136,7 +144,11 @@ def test_agent_runtime_retries_retryable_stream_errors(monkeypatch):
     assert result[-1].content == "done"
     assert build_llm_calls == [
         ("main_agent", {"streaming": True}),
+        ("information_collect_agent", {}),
+        ("writeup_agent", {}),
         ("main_agent", {"streaming": True}),
+        ("information_collect_agent", {}),
+        ("writeup_agent", {}),
     ]
     assert ("rollback", 0) in events
     assert any(event == "live_rollback" for event, _ in events)

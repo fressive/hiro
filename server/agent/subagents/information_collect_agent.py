@@ -6,8 +6,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from deepagents import create_deep_agent
-
 from langchain.agents import create_agent
 from langchain_core.messages import (
     AIMessage,
@@ -58,6 +56,8 @@ Responsibilities:
 - Propose concrete next collection steps, tools, and artifacts to update.
 - Call out missing prerequisites or ambiguity that would affect collection.
 - Use feroxbuster when authorized target URLs need web path discovery.
+- Append concise useful collection notes and tool results to INFO.md in the
+  working directory.
 
 Rules:
 - Do not claim that commands, scans, requests, or exploits were executed unless

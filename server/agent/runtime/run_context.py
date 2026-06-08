@@ -1,28 +1,20 @@
-"""Per-run state shared across custom agent graph nodes."""
+"""Per-run state shared across a custom agent execution."""
 
 import asyncio
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
-from typing import Any, TypedDict
+from typing import Any
 
-from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.messages import BaseMessage
 
 from server.agent.events.streaming import AgentStreamEvent, StreamCallbackHandler
-from server.agent.trace.execution_trace import initial_graph_nodes
 
 
 @dataclass
 class AgentRunContext:
-    """Mutable state for one graph execution.
+    """Mutable state for one agent execution."""
 
-    The LangGraph state only carries this object under the ``run`` key. Each
-    graph node updates a focused part of it: persistence IDs, prepared context,
-    agent outputs, streaming callbacks, resource cleanup handles, and graph
-    trace metadata. See ``docs/agent-run-context.md`` for field-level semantics.
-    """
-
-    # Queue consumed by the WebSocket/API bridge. Graph nodes publish stream,
-    # graph status, error, and done events through it.
+    # Queue consumed by the WebSocket/API bridge.
     queue: asyncio.Queue[AgentStreamEvent | None]
 
     # Model callback collector for streamed text, token usage, tool events, and
@@ -51,46 +43,9 @@ class AgentRunContext:
     # Main-agent message output returned by DeepAgent.
     all_messages: list[Any] = field(default_factory=list)
 
-    # Messages produced by graph agents during this run. Nodes can be revisited,
-    # so persistence uses this append-only sequence instead of only the latest
-    # node output.
+    # Messages produced by the DeepAgent run and persisted after execution.
     generated_messages: list[Any] = field(default_factory=list)
 
     # Final text emitted in the done event after persistence chooses the best
     # available assistant output.
     assistant_text: str = ""
-
-    # Optional information collection output, persisted as its own agent
-    # message and appended into the main-agent prompt.
-    information_collect_message: AIMessage | None = None
-    information_collect_messages: list[AIMessage] = field(default_factory=list)
-    information_collect_text: str = ""
-
-    # Optional report output. When present, it becomes the final assistant text.
-    writeup_text: str = ""
-
-    # Guard against loading MCP tools twice when the runner preloads them before
-    # graph execution.
-    mcp_tools_loaded: bool = False
-
-    # Current graph status snapshot for live UI rendering and persisted trace
-    # metadata.
-    graph_nodes: list[dict[str, Any]] = field(default_factory=initial_graph_nodes)
-
-    # Router bookkeeping. Routers can send execution back through nodes, so
-    # these counters guard against unbounded cycles and inform LLM decisions.
-    node_visit_counts: dict[str, int] = field(default_factory=dict)
-    prepare_route_count: int = 0
-    prepare_route_actions: dict[str, int] = field(default_factory=dict)
-    post_execute_route_count: int = 0
-    post_execute_route_actions: dict[str, int] = field(default_factory=dict)
-
-
-class AgentGraphState(TypedDict):
-    """LangGraph state wrapper.
-
-    Keeping a single mutable context object avoids copying large message/tool
-    lists between nodes while still making the state shape explicit.
-    """
-
-    run: AgentRunContext

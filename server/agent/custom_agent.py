@@ -2,23 +2,28 @@
 
 import asyncio
 from contextlib import AsyncExitStack, suppress
-from typing import Callable
+from typing import Any, Callable
+
+from langchain_core.messages import AIMessage, BaseMessage
 
 from server.agent.events.streaming import (
     AgentStreamEvent,
     StreamCallbackHandler,
     stream_event,
 )
-from server.agent.graph.execution_graph import AgentExecutionGraph
 from server.agent.persistence.message_store import AgentMessageStore
 from server.agent.runtime.agent_runtime import AgentRuntime
 from server.agent.runtime.mcp_loader import load_mcp_tools
 from server.agent.runtime.run_context import AgentRunContext
-from server.agent.trace.execution_trace import GRAPH_EDGES, GRAPH_NODES
+from server.agent.utils.tool_call_ids import normalize_ai_message_tool_call_ids
 from server.core.logger import logger
 from server.models.llm import LLMConfig
 from server.schemas.agent import AgentRunRequest
 from server.service.rag_service import RagService
+
+MAIN_AGENT_NAME = "main_agent"
+INFORMATION_COLLECT_AGENT_NAME = "information_collect_agent"
+WRITEUP_AGENT_NAME = "writeup_agent"
 
 
 class CustomAgent:
@@ -54,14 +59,6 @@ class CustomAgent:
             config=config,
             agent_configs=self.agent_configs,
         )
-        self._execution_graph = AgentExecutionGraph(
-            session_id=session_id,
-            input_text=self.input_text,
-            payload=payload,
-            messages=self._messages,
-            runtime=self._runtime,
-            rag_context=lambda: self.rag_context,
-        )
 
     async def start(
         self,
@@ -85,16 +82,6 @@ class CustomAgent:
         if self.rag_sources:
             await queue.put(stream_event("rag_search", {"sources": self.rag_sources}))
 
-        await queue.put(
-            stream_event(
-                "graph_init",
-                {
-                    "nodes": GRAPH_NODES,
-                    "edges": GRAPH_EDGES,
-                },
-            )
-        )
-
         task = asyncio.create_task(self._run_agent(queue, callback, on_task_done))
         if on_task_started:
             on_task_started(task)
@@ -116,13 +103,12 @@ class CustomAgent:
                 exit_stack=exit_stack,
             )
             # MCP sessions use anyio cancel scopes; enter and exit them in this
-            # runner task so LangGraph node scheduling cannot split the scope.
+            # runner task so cleanup happens in the same async context.
             run_context.mcp_tools = await load_mcp_tools(
                 self.payload.mcp_servers,
                 exit_stack,
             )
-            run_context.mcp_tools_loaded = True
-            await self._execution_graph.ainvoke({"run": run_context})
+            await self._execute_run(run_context)
 
         except Exception as exc:
             logger.error("Agent execution error: %s", exc)
@@ -148,6 +134,88 @@ class CustomAgent:
             if on_task_done:
                 on_task_done()
             await queue.put(None)
+
+    async def _execute_run(self, run: AgentRunContext) -> None:
+        run.user_msg_id = await self._messages.save_user_message()
+        run.assistant_msg_id = await self._messages.create_assistant_placeholder()
+        run.update_task = asyncio.create_task(
+            self._messages.update_assistant_periodically(
+                run.assistant_msg_id,
+                run.callback,
+                run.agent_done,
+                lambda: self.run_metadata(run),
+            )
+        )
+
+        run.history_messages = await self._messages.load_history(
+            user_msg_id=run.user_msg_id,
+            assistant_msg_id=run.assistant_msg_id,
+        )
+        run.full_system_prompt = self._runtime.build_system_prompt(
+            mcp_tools=run.mcp_tools,
+            rag_context=self.rag_context,
+        )
+        run.all_messages = await self._runtime.execute(
+            history_messages=run.history_messages,
+            mcp_tools=run.mcp_tools,
+            full_system_prompt=run.full_system_prompt,
+            callback=run.callback,
+        )
+        _tag_new_ai_messages(
+            run.all_messages,
+            start_index=len(run.history_messages) + 1,
+            name=MAIN_AGENT_NAME,
+        )
+        run.generated_messages.extend(
+            run.all_messages[len(run.history_messages) + 1 :]
+        )
+
+        run.agent_done.set()
+        if run.update_task is not None:
+            await run.update_task
+            run.update_task = None
+
+        if run.assistant_msg_id is None:
+            raise RuntimeError("Assistant placeholder was not initialized")
+
+        new_messages = [
+            normalize_ai_message_tool_call_ids(msg)
+            if isinstance(msg, BaseMessage)
+            else msg
+            for msg in run.generated_messages
+        ]
+        run.assistant_text = await self._messages.save_final_messages(
+            new_messages=new_messages,
+            assistant_msg_id=run.assistant_msg_id,
+            callback_usage=run.callback.usage,
+            callback_text=run.callback.token_text,
+            run_metadata=self.run_metadata(run),
+            agent_models=self.agent_model_names(),
+        )
+        if not run.assistant_text:
+            run.assistant_text = run.callback.token_text
+
+        await run.queue.put(
+            stream_event(
+                "done",
+                {"text": run.assistant_text, "session_id": self.session_id},
+            )
+        )
+
+    def run_metadata(self, run: AgentRunContext) -> dict[str, Any]:
+        return {
+            "tool_events": run.callback.tool_events,
+            "mcp_events": run.callback.mcp_events,
+        }
+
+    def agent_model_names(self) -> dict[str, str]:
+        return {
+            INFORMATION_COLLECT_AGENT_NAME: self._runtime.agent_model_name(
+                INFORMATION_COLLECT_AGENT_NAME
+            ),
+            MAIN_AGENT_NAME: self._runtime.agent_model_name(MAIN_AGENT_NAME),
+            WRITEUP_AGENT_NAME: self._runtime.agent_model_name(WRITEUP_AGENT_NAME),
+        }
 
     async def _close_mcp_sessions(self, run: AgentRunContext) -> None:
         try:
@@ -197,3 +265,23 @@ def _exception_message(error: BaseException) -> str:
             return f"{summary}: {detail}"
         return summary
     return str(error) or error.__class__.__name__
+
+
+def _tag_new_ai_messages(
+    messages: list[Any],
+    *,
+    start_index: int,
+    name: str,
+) -> None:
+    for index in range(start_index, len(messages)):
+        message = messages[index]
+        if isinstance(message, AIMessage):
+            messages[index] = _with_agent_name(message, name)
+
+
+def _with_agent_name(message: AIMessage, name: str) -> AIMessage:
+    try:
+        message.name = name
+        return message
+    except Exception:
+        return message.model_copy(update={"name": name})

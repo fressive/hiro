@@ -26,8 +26,6 @@ from server.agent.custom_agent import CustomAgent
 from server.agent.events.session_events import SessionEventHub
 from server.agent.events.streaming import AgentStreamEvent
 from server.agent.trace.execution_trace import (
-    GRAPH_EDGES,
-    GRAPH_NODES,
     attach_trace_metadata_fallback,
     normalize_trace_metadata,
 )
@@ -46,7 +44,6 @@ from server.schemas.agent import (
     AgentSessionTemplateUpdate,
     AgentSessionTemplateResponse,
     AgentMessageResponse,
-    AgentGraphResponse,
     ToolResponse,
     SessionFileResponse,
 )
@@ -351,7 +348,7 @@ async def _handle_websocket_command(
 
 @router.websocket("/sessions/{session_id}/ws")
 async def session_websocket(websocket: WebSocket, session_id: int):
-    """Live session channel for agent status, graph, tool, and token events."""
+    """Live session channel for agent status, tool, and token events."""
     if not await _session_exists(session_id):
         await websocket.close(code=1008)
         return
@@ -401,15 +398,6 @@ async def list_tools():
         ToolResponse(name=tool.name, description=tool.description)
         for tool in agent_tools
     ]
-
-
-@router.get("/graph", response_model=AgentGraphResponse)
-async def get_agent_graph():
-    """Return the backend execution graph metadata."""
-    return AgentGraphResponse(
-        nodes=GRAPH_NODES,
-        edges=GRAPH_EDGES,
-    )
 
 
 @router.get("/sessions/{session_id}/status")

@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class AgentRunRequest(BaseModel):
@@ -27,33 +27,6 @@ class ToolResponse(BaseModel):
 
     name: str
     description: str
-
-
-class AgentGraphNodeResponse(BaseModel):
-    """Execution graph node metadata."""
-
-    id: str
-    label: str
-    description: Optional[str] = None
-    status: Optional[str] = None
-    node_type: Optional[str] = None
-    agent_name: Optional[str] = None
-
-
-class AgentGraphEdgeResponse(BaseModel):
-    """Execution graph edge metadata."""
-
-    from_: str = Field(alias="from")
-    to: str
-    condition: Optional[str] = None
-    bidirectional: Optional[bool] = None
-
-
-class AgentGraphResponse(BaseModel):
-    """Execution graph metadata response schema."""
-
-    nodes: List[AgentGraphNodeResponse]
-    edges: List[AgentGraphEdgeResponse]
 
 
 class AgentSessionCreate(BaseModel):

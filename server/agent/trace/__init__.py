@@ -1,2 +1,1 @@
-"""Execution graph and trace metadata helpers."""
-
+"""Tool and MCP trace metadata helpers."""

@@ -19,29 +19,6 @@ export type EventRecord = {
   output?: string
 }
 
-export type GraphNodeStatus = 'pending' | 'running' | 'done' | 'skipped' | 'error'
-
-export type GraphNodeRecord = {
-  id: string
-  label: string
-  description?: string
-  status: GraphNodeStatus
-  node_type?: 'agent' | string
-  agent_name?: string
-}
-
-export type GraphEdgeRecord = {
-  from: string
-  to: string
-  condition?: string
-  bidirectional?: boolean
-}
-
-export type AgentGraph = {
-  nodes: GraphNodeRecord[]
-  edges: GraphEdgeRecord[]
-}
-
 export type AgentSession = {
   id: number
   title?: string | null
@@ -97,8 +74,6 @@ export type AgentMessage = {
   tool_calls?: any[]
   extra_metadata?: {
     rag_sources?: string[]
-    graph_nodes?: GraphNodeRecord[]
-    graph_edges?: GraphEdgeRecord[]
     tool_events?: EventRecord[]
     mcp_events?: EventRecord[]
   }

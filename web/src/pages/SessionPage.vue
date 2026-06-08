@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Square, Loader2, Trash2, ChevronLeft, BarChart3, MessageSquare, Files, SlidersHorizontal, X, SendHorizontal, Pencil, Check, GripVertical, Bot, ListFilter } from '@lucide/vue'
+import { Square, Loader2, Trash2, ChevronLeft, BarChart3, MessageSquare, Files, SlidersHorizontal, X, SendHorizontal, Pencil, Check } from '@lucide/vue'
 import {
   DialogClose,
   DialogContent,
@@ -28,15 +28,10 @@ import type {
   AgentSessionTemplate,
   MCPServer,
   AgentMessage,
-  AgentGraph,
-  GraphEdgeRecord,
-  GraphNodeRecord,
-  GraphNodeStatus,
 } from '@/types/agent'
 import MessageItem from '@/components/agent/MessageItem.vue'
 import AgentSettings from '@/components/agent/AgentSettings.vue'
 import ActiveResponse from '@/components/agent/ActiveResponse.vue'
-import ExecutionGraphPanel from '@/components/agent/ExecutionGraphPanel.vue'
 import SessionList from '@/components/agent/SessionList.vue'
 import FileList from '@/components/agent/FileList.vue'
 import { LineChart } from '@/components/ui/chart'
@@ -61,13 +56,7 @@ const liveTokenUsage = ref({
 })
 const toolEvents = ref<EventRecord[]>([])
 const mcpEvents = ref<EventRecord[]>([])
-const graphNodes = ref<GraphNodeRecord[]>([])
-const graphEdges = ref<GraphEdgeRecord[]>([])
-const backendGraphNodes = ref<GraphNodeRecord[]>([])
-const backendGraphEdges = ref<GraphEdgeRecord[]>([])
 const agentConfigs = ref<Record<string, number | null>>({})
-const selectedGraphAgentName = ref<string | null>(null)
-const activeAgentFilter = ref<string | null>(null)
 const ragSources = ref<string[]>([])
 const sessions = ref<AgentSession[]>([])
 const sessionTemplates = ref<AgentSessionTemplate[]>([])
@@ -79,7 +68,6 @@ const maxTokens = ref(100000)
 const enable1mContext = ref(false)
 const enableRag = ref(false)
 const responseScroll = ref<HTMLDivElement | null>(null)
-const chatLayout = ref<HTMLDivElement | null>(null)
 const expandedMessages = ref<Record<number, boolean>>({})
 const isTemplateDialogOpen = ref(false)
 const templateName = ref('')
@@ -92,7 +80,6 @@ const isRenamingSelectedSession = ref(false)
 const selectedSessionTitleDraft = ref('')
 const selectedTitleInput = ref<HTMLInputElement | null>(null)
 const selectedSessionStorageKey = 'HIRO_SELECTED_AGENT_SESSION_ID'
-const graphPanelWidthStorageKey = 'HIRO_EXECUTION_GRAPH_PANEL_WIDTH'
 let liveSnapshots: Record<string, {
   output: any[]
   toolEvents: EventRecord[]
@@ -103,18 +90,12 @@ let liveSnapshots: Record<string, {
     output_tokens: number
   }
 }> = {}
-const GRAPH_PANEL_MIN_WIDTH = 240
-const GRAPH_PANEL_MAX_WIDTH = 560
-const GRAPH_PANEL_CHAT_MIN_WIDTH = 420
-const GRAPH_PANEL_LAYOUT_RESERVED_WIDTH = 48
 let socketSessionId: number | null = null
 let socketConnectPromise: Promise<void> | null = null
 let manualSocketClose = false
 
 const innerTab = ref<'chat' | 'stats' | 'files'>('chat')
 const showSettings = ref(false)
-const graphPanelWidth = ref(320)
-const isResizingGraphPanel = ref(false)
 
 type SessionStats = {
   total_tokens: number
@@ -157,70 +138,6 @@ const chartConfig = {
     label: 'Output Tokens',
     color: 'var(--vis-color-2)',
   },
-}
-
-const graphNodeStatuses = new Set<GraphNodeStatus>([
-  'pending',
-  'running',
-  'done',
-  'skipped',
-  'error',
-])
-
-const normalizeGraphNode = (
-  node: any,
-  fallbackStatus: GraphNodeStatus = 'pending',
-): GraphNodeRecord | null => {
-  if (!node?.id) return null
-  const status = graphNodeStatuses.has(node.status as GraphNodeStatus)
-    ? node.status as GraphNodeStatus
-    : fallbackStatus
-  return {
-    id: String(node.id),
-    label: node.label ? String(node.label) : String(node.id),
-    description: node.description ? String(node.description) : undefined,
-    status,
-    node_type: node.node_type ? String(node.node_type) : undefined,
-    agent_name: node.agent_name ? String(node.agent_name) : undefined,
-  }
-}
-
-const normalizeGraphEdge = (edge: any): GraphEdgeRecord | null => {
-  if (!edge?.from || !edge?.to) return null
-  return {
-    from: String(edge.from),
-    to: String(edge.to),
-    condition: edge.condition ? String(edge.condition) : undefined,
-    bidirectional: edge.bidirectional === undefined ? undefined : Boolean(edge.bidirectional),
-  }
-}
-
-const normalizeGraphNodes = (nodes: any): GraphNodeRecord[] => {
-  if (!Array.isArray(nodes)) return []
-  return nodes.flatMap((node) => {
-    const normalized = normalizeGraphNode(node)
-    return normalized ? [normalized] : []
-  })
-}
-
-const normalizeGraphEdges = (edges: any): GraphEdgeRecord[] => {
-  if (!Array.isArray(edges)) return []
-  return edges.flatMap((edge) => {
-    const normalized = normalizeGraphEdge(edge)
-    return normalized ? [normalized] : []
-  })
-}
-
-const fetchAgentGraph = async () => {
-  try {
-    const response = await apiFetch('/api/v1/agent/graph')
-    if (!response.ok) return
-    const graph = await response.json() as Partial<AgentGraph>
-    backendGraphNodes.value = normalizeGraphNodes(graph.nodes)
-    backendGraphEdges.value = normalizeGraphEdges(graph.edges)
-  } catch (error) {
-    console.error('Failed to fetch agent graph:', error)
-  }
 }
 
 const fetchSessionStats = async () => {
@@ -273,9 +190,7 @@ watch(isDeleteSessionDialogOpen, (open) => {
 const hasTraceMetadata = (message: AgentMessage) => {
   const metadata = message.extra_metadata
   return Boolean(
-    metadata?.graph_nodes?.length
-    || metadata?.graph_edges?.length
-    || metadata?.tool_events?.length
+    metadata?.tool_events?.length
     || metadata?.mcp_events?.length
   )
 }
@@ -292,16 +207,13 @@ const isAssistantPlaceholder = (message: AgentMessage) => {
 const hasLiveResponseActivity = computed(() => (
   isRunning.value
   || output.value.length > 0
-  || graphNodes.value.length > 0
   || toolEvents.value.length > 0
   || mcpEvents.value.length > 0
 ))
 
 const isActiveAssistantDraft = (message: AgentMessage) => {
   if (message.role !== 'assistant' || !hasLiveResponseActivity.value) return false
-
-  const graph = message.extra_metadata?.graph_nodes || []
-  return graph.some((node) => node.status === 'pending' || node.status === 'running')
+  return !message.content.trim() && (!message.tool_calls || message.tool_calls.length === 0)
 }
 
 const isInternalToolCallAssistant = (message: AgentMessage) => (
@@ -379,237 +291,6 @@ const displayMessages = computed(() => {
     created_at: new Date().toISOString(),
   })
 })
-
-const latestTraceGraphNodes = computed(() => {
-  for (let index = messages.value.length - 1; index >= 0; index -= 1) {
-    const message = messages.value[index]
-    if (message.role !== 'assistant') continue
-    const graph = message.extra_metadata?.graph_nodes
-    if (graph?.length) return graph
-  }
-  return []
-})
-
-const latestTraceGraphEdges = computed(() => {
-  for (let index = messages.value.length - 1; index >= 0; index -= 1) {
-    const message = messages.value[index]
-    if (message.role !== 'assistant') continue
-    const edges = message.extra_metadata?.graph_edges
-    if (edges?.length) return edges
-  }
-  return []
-})
-
-const mergeGraphNodesWithBackendTemplate = (sourceNodes: GraphNodeRecord[]) => {
-  if (backendGraphNodes.value.length === 0) return sourceNodes
-
-  const merged = backendGraphNodes.value.map((node) => ({ ...node }))
-  const byId = new Map(merged.map((node, index) => [node.id, index]))
-
-  for (const sourceNode of sourceNodes) {
-    const index = byId.get(sourceNode.id)
-    if (index === undefined) {
-      byId.set(sourceNode.id, merged.length)
-      merged.push(sourceNode)
-      continue
-    }
-
-    const templateNode = merged[index]
-    merged[index] = {
-      ...templateNode,
-      ...sourceNode,
-      label: sourceNode.label || templateNode.label,
-      description: sourceNode.description ?? templateNode.description,
-      node_type: sourceNode.node_type ?? templateNode.node_type,
-      agent_name: sourceNode.agent_name ?? templateNode.agent_name,
-    }
-  }
-
-  return merged
-}
-
-const mergeGraphEdgesWithBackendTemplate = (sourceEdges: GraphEdgeRecord[]) => {
-  if (backendGraphEdges.value.length === 0) return sourceEdges
-
-  const merged = [...backendGraphEdges.value]
-  const seen = new Set(
-    merged.map((edge) => `${edge.from}->${edge.to}:${edge.condition || ''}`),
-  )
-  for (const edge of sourceEdges) {
-    const key = `${edge.from}->${edge.to}:${edge.condition || ''}`
-    if (seen.has(key)) continue
-    seen.add(key)
-    merged.push(edge)
-  }
-  return merged
-}
-
-const visibleGraphNodes = computed(() => {
-  if (graphNodes.value.length > 0) {
-    return mergeGraphNodesWithBackendTemplate(graphNodes.value)
-  }
-  if (!isRunning.value && latestTraceGraphNodes.value.length > 0) {
-    return mergeGraphNodesWithBackendTemplate(latestTraceGraphNodes.value)
-  }
-  return backendGraphNodes.value
-})
-
-const visibleGraphEdges = computed(() => {
-  if (graphNodes.value.length > 0) {
-    return mergeGraphEdgesWithBackendTemplate(graphEdges.value)
-  }
-  if (!isRunning.value && latestTraceGraphEdges.value.length > 0) {
-    return mergeGraphEdgesWithBackendTemplate(latestTraceGraphEdges.value)
-  }
-  return backendGraphEdges.value
-})
-
-const agentDisplayNames: Record<string, string> = {
-  information_collect_agent: 'Information Collect Agent',
-  main_agent: 'Main Agent',
-  writeup_agent: 'Writeup Agent',
-}
-
-const formatAgentName = (agentName: string) => (
-  agentDisplayNames[agentName] || agentName
-    .split('_')
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(' ')
-)
-
-const graphAgentNodes = computed(() => (
-  visibleGraphNodes.value.filter((node) => node.node_type === 'agent' && node.agent_name)
-))
-
-const selectedGraphAgentNode = computed(() => {
-  if (!selectedGraphAgentName.value) return null
-  return graphAgentNodes.value.find((node) => node.agent_name === selectedGraphAgentName.value) || null
-})
-
-const selectedGraphAgentModelId = computed({
-  get: () => (
-    selectedGraphAgentName.value
-      ? agentConfigs.value[selectedGraphAgentName.value] ?? ''
-      : ''
-  ),
-  set: (value: string | number | null) => {
-    if (!selectedGraphAgentName.value) return
-    const next = { ...agentConfigs.value }
-    if (value === '' || value === null) {
-      next[selectedGraphAgentName.value] = null
-    } else {
-      const normalized = Number(value)
-      next[selectedGraphAgentName.value] = Number.isFinite(normalized)
-        ? normalized
-        : null
-    }
-    agentConfigs.value = next
-  },
-})
-
-const selectedGraphAgentModelName = computed(() => {
-  const configId = selectedGraphAgentName.value
-    ? agentConfigs.value[selectedGraphAgentName.value]
-    : null
-  const config = configs.value.find((item) => item.id === configId)
-  if (config) return config.name || config.model
-  const fallback = configs.value.find((item) => item.id === selectedConfigId.value)
-  return fallback ? `Session default: ${fallback.name || fallback.model}` : 'Session default'
-})
-
-const handleGraphAgentSelect = (node: GraphNodeRecord) => {
-  if (node.node_type !== 'agent' || !node.agent_name) return
-  selectedGraphAgentName.value = node.agent_name
-  activeAgentFilter.value = node.agent_name
-}
-
-const clearAgentFilter = () => {
-  activeAgentFilter.value = null
-}
-
-const visibleDisplayMessages = computed(() => {
-  if (!activeAgentFilter.value) return displayMessages.value
-  return displayMessages.value.filter((message) => (
-    message.role === 'user'
-    || (message.role === 'assistant' && message.name === activeAgentFilter.value)
-  ))
-})
-
-const chatLayoutStyle = computed<Record<string, string>>(() => ({
-  '--execution-graph-width': `${graphPanelWidth.value}px`,
-}))
-
-const graphPanelWidthMax = () => {
-  const width = chatLayout.value?.getBoundingClientRect().width
-  if (!width) return GRAPH_PANEL_MAX_WIDTH
-  return Math.min(
-    GRAPH_PANEL_MAX_WIDTH,
-    Math.max(
-      GRAPH_PANEL_MIN_WIDTH,
-      width - GRAPH_PANEL_CHAT_MIN_WIDTH - GRAPH_PANEL_LAYOUT_RESERVED_WIDTH,
-    ),
-  )
-}
-
-const clampGraphPanelWidth = (width: number) => {
-  return Math.round(Math.min(Math.max(width, GRAPH_PANEL_MIN_WIDTH), graphPanelWidthMax()))
-}
-
-const setGraphPanelWidth = (width: number) => {
-  graphPanelWidth.value = clampGraphPanelWidth(width)
-}
-
-const persistGraphPanelWidth = () => {
-  localStorage.setItem(graphPanelWidthStorageKey, String(graphPanelWidth.value))
-}
-
-const handleGraphPanelResizeMove = (event: PointerEvent) => {
-  if (!isResizingGraphPanel.value) return
-  const rect = chatLayout.value?.getBoundingClientRect()
-  if (!rect) return
-  event.preventDefault()
-  setGraphPanelWidth(event.clientX - rect.left)
-}
-
-const stopGraphPanelResize = () => {
-  if (!isResizingGraphPanel.value) return
-  isResizingGraphPanel.value = false
-  window.removeEventListener('pointermove', handleGraphPanelResizeMove)
-  window.removeEventListener('pointerup', stopGraphPanelResize)
-  window.removeEventListener('pointercancel', stopGraphPanelResize)
-  persistGraphPanelWidth()
-}
-
-const startGraphPanelResize = (event: PointerEvent) => {
-  event.preventDefault()
-  isResizingGraphPanel.value = true
-  window.addEventListener('pointermove', handleGraphPanelResizeMove)
-  window.addEventListener('pointerup', stopGraphPanelResize)
-  window.addEventListener('pointercancel', stopGraphPanelResize)
-  handleGraphPanelResizeMove(event)
-}
-
-const handleGraphPanelResizeKeydown = (event: KeyboardEvent) => {
-  const step = event.shiftKey ? 40 : 16
-  if (event.key === 'ArrowLeft') {
-    event.preventDefault()
-    setGraphPanelWidth(graphPanelWidth.value - step)
-    persistGraphPanelWidth()
-  } else if (event.key === 'ArrowRight') {
-    event.preventDefault()
-    setGraphPanelWidth(graphPanelWidth.value + step)
-    persistGraphPanelWidth()
-  } else if (event.key === 'Home') {
-    event.preventDefault()
-    setGraphPanelWidth(GRAPH_PANEL_MIN_WIDTH)
-    persistGraphPanelWidth()
-  } else if (event.key === 'End') {
-    event.preventDefault()
-    setGraphPanelWidth(GRAPH_PANEL_MAX_WIDTH)
-    persistGraphPanelWidth()
-  }
-}
 
 const scrollResponseToBottom = async () => {
   await nextTick()
@@ -812,8 +493,6 @@ const onSessionChange = (id: number | null) => {
     localStorage.removeItem(selectedSessionStorageKey)
     messages.value = []
     agentConfigs.value = {}
-    selectedGraphAgentName.value = null
-    activeAgentFilter.value = null
     clearOutput()
   }
 }
@@ -1159,8 +838,6 @@ const clearLiveResponse = () => {
     output_tokens: 0,
   }
   liveSnapshots = {}
-  graphNodes.value = []
-  graphEdges.value = []
   ragSources.value = []
 }
 
@@ -1191,31 +868,6 @@ const normalizeLiveTokenUsage = (usage: any) => ({
   cached_input_tokens: Number(usage?.cached_input_tokens || 0),
   output_tokens: Number(usage?.output_tokens || 0),
 })
-
-const upsertGraphNode = (incoming: Partial<GraphNodeRecord> & { id: string, status?: GraphNodeStatus }) => {
-  const index = graphNodes.value.findIndex((item) => item.id === incoming.id)
-  if (index >= 0) {
-    const existing = graphNodes.value[index]
-    graphNodes.value[index] = {
-      ...existing,
-      status: incoming.status || existing.status,
-      label: incoming.label || existing.label,
-      description: incoming.description ?? existing.description,
-      node_type: incoming.node_type ?? existing.node_type,
-      agent_name: incoming.agent_name ?? existing.agent_name,
-    }
-  } else {
-    const template = backendGraphNodes.value.find((node) => node.id === incoming.id)
-    graphNodes.value.push({
-      id: incoming.id,
-      label: incoming.label || template?.label || incoming.id,
-      description: incoming.description ?? template?.description,
-      status: incoming.status || 'pending',
-      node_type: incoming.node_type ?? template?.node_type,
-      agent_name: incoming.agent_name ?? template?.agent_name,
-    })
-  }
-}
 
 const applyEvent = (event: string, payload: any) => {
   if (event === 'live_checkpoint') {
@@ -1289,26 +941,6 @@ const applyEvent = (event: string, payload: any) => {
   if (event === 'rag_search') {
     if (Array.isArray(payload.sources)) {
       ragSources.value = payload.sources
-    }
-    return
-  }
-
-  if (event === 'graph_init') {
-    graphNodes.value = normalizeGraphNodes(payload.nodes)
-    graphEdges.value = normalizeGraphEdges(payload.edges)
-    return
-  }
-
-  if (event === 'graph_node') {
-    if (payload.id) {
-      upsertGraphNode({
-        id: payload.id,
-        label: payload.label,
-        description: payload.description,
-        status: payload.status || 'running',
-        node_type: payload.node_type,
-        agent_name: payload.agent_name,
-      })
     }
     return
   }
@@ -1438,12 +1070,6 @@ const toggleMcpServer = (serverName: string) => {
 }
 
 onMounted(async () => {
-  const savedGraphPanelWidth = Number(localStorage.getItem(graphPanelWidthStorageKey))
-  if (Number.isFinite(savedGraphPanelWidth) && savedGraphPanelWidth > 0) {
-    setGraphPanelWidth(savedGraphPanelWidth)
-  }
-
-  await fetchAgentGraph()
   await fetchConfigs()
   await fetchTools()
   await fetchMcpServers()
@@ -1457,12 +1083,11 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  stopGraphPanelResize()
   closeSessionSocket()
 })
 
 watch(
-  () => [visibleDisplayMessages.value.length, output.value, streamError.value, isRunning.value],
+  () => [displayMessages.value.length, output.value, streamError.value, isRunning.value],
   scrollResponseToBottom,
   { immediate: true },
 )
@@ -1609,81 +1234,9 @@ watch(
         <div v-else class="relative h-full min-h-0 overflow-hidden">
           <template v-if="innerTab === 'chat'">
             <div
-              ref="chatLayout"
-              class="session-chat-layout grid h-full min-h-0 gap-3 overflow-hidden"
-              :class="{ 'is-resizing': isResizingGraphPanel }"
-              :style="chatLayoutStyle"
+              class="session-chat-layout flex h-full min-h-0 flex-col overflow-hidden"
             >
-              <ExecutionGraphPanel
-                class="min-h-0"
-                :graph-nodes="visibleGraphNodes"
-                :graph-edges="visibleGraphEdges"
-                :is-running="isRunning"
-                :selected-agent-name="selectedGraphAgentName"
-                @select-agent-node="handleGraphAgentSelect"
-              />
-
-              <div
-                role="separator"
-                aria-label="Resize execution graph panel"
-                aria-orientation="vertical"
-                :aria-valuemin="GRAPH_PANEL_MIN_WIDTH"
-                :aria-valuemax="GRAPH_PANEL_MAX_WIDTH"
-                :aria-valuenow="Math.round(graphPanelWidth)"
-                tabindex="0"
-                :class="[
-                  'hidden cursor-col-resize touch-none select-none items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:flex',
-                  isResizingGraphPanel && 'bg-muted text-foreground',
-                ]"
-                @pointerdown="startGraphPanelResize"
-                @keydown="handleGraphPanelResizeKeydown"
-              >
-                <GripVertical class="h-4 w-4" />
-              </div>
-
               <div class="flex min-h-0 flex-col overflow-hidden">
-                <div
-                  v-if="selectedGraphAgentNode"
-                  class="shrink-0 border-b bg-background/95 px-1 py-2"
-                >
-                  <div class="mx-auto flex max-w-4xl flex-wrap items-center gap-2">
-                    <div class="flex min-w-0 items-center gap-2 rounded-md border bg-muted/20 px-2.5 py-1.5 text-xs text-foreground">
-                      <Bot class="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                      <span class="truncate">{{ formatAgentName(selectedGraphAgentNode.agent_name || '') }}</span>
-                    </div>
-                    <div class="ml-auto flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
-                      <div
-                        v-if="activeAgentFilter"
-                        class="flex items-center gap-1.5 rounded-md border border-primary/20 bg-primary/5 px-2 py-1 text-[11px] text-primary"
-                      >
-                        <ListFilter class="h-3 w-3 shrink-0" />
-                        <span class="truncate">{{ formatAgentName(activeAgentFilter) }}</span>
-                      </div>
-                      <select
-                        v-model="selectedGraphAgentModelId"
-                        class="h-8 min-w-[13rem] max-w-full rounded-md border border-input bg-background px-2 py-1 text-xs ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                        :disabled="configs.length === 0 || isRunning"
-                        :title="selectedGraphAgentModelName"
-                      >
-                        <option :value="''">Use session default</option>
-                        <option v-for="config in configs" :key="config.id" :value="config.id">
-                          {{ config.name }} · {{ config.model }}
-                        </option>
-                      </select>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        title="Clear agent filter"
-                        class="h-8 w-8 shrink-0"
-                        :disabled="!activeAgentFilter"
-                        @click="clearAgentFilter"
-                      >
-                        <X class="h-4 w-4" />
-                      </Button>
-                    </div>
-                  </div>
-                </div>
                 <div class="min-h-0 flex-1 overflow-hidden">
                   <div ref="responseScroll" class="h-full overflow-auto px-1">
                     <div class="mx-auto flex min-h-full max-w-4xl flex-col py-4">
@@ -1691,7 +1244,7 @@ watch(
                         <div v-if="messages.length === 0" class="text-sm text-muted-foreground">
                           No messages yet. Start a run to build history.
                         </div>
-                        <template v-for="message in visibleDisplayMessages" :key="message.id">
+                        <template v-for="message in displayMessages" :key="message.id">
                           <MessageItem
                             :message="message"
                             :is-expanded="expandedMessages[message.id]"
@@ -1992,22 +1545,6 @@ watch(
 </template>
 
 <style scoped>
-.session-chat-layout {
-  grid-template-rows: 14rem minmax(0, 1fr);
-}
-
-.session-chat-layout.is-resizing {
-  cursor: col-resize;
-  user-select: none;
-}
-
-@media (min-width: 1024px) {
-  .session-chat-layout {
-    grid-template-columns: minmax(15rem, var(--execution-graph-width, 320px)) 0.75rem minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr);
-  }
-}
-
 .mask-fade {
   mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
 }

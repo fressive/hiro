@@ -13,7 +13,16 @@ from langchain_core.messages import BaseMessage, HumanMessage
 from server.agent.events.streaming import StreamCallbackHandler
 from server.agent.runtime.context import SessionContext
 from server.agent.runtime.sandboxed_backend import SessionSandboxedBackend
+from server.agent.subagents.information_collect_agent import (
+    INFORMATION_COLLECT_AGENT_NAME,
+    INFORMATION_COLLECT_SYSTEM_PROMPT,
+)
+from server.agent.subagents.writeup_agent import (
+    WRITEUP_AGENT_NAME,
+    WRITEUP_SYSTEM_PROMPT,
+)
 from server.agent.tools import agent_tools
+from server.agent.tools.feroxbuster import feroxbuster
 from server.agent.utils.tool_call_ids import ToolCallIdMiddleware
 from server.core.logger import logger
 from server.core.util import get_data_path
@@ -24,8 +33,8 @@ SYSTEM_PROMPT = """"""
 SKILLS_ROOT = Path("./skills")
 DEEPAGENT_SKILLS_ROUTE = "/skills"
 MAIN_AGENT_SKILL_SOURCE_DIRS = ("main-agent", "exploit-agent")
-INFORMATION_COLLECT_AGENT_NAME = "information_collect_agent"
-WRITEUP_AGENT_NAME = "writeup_agent"
+INFORMATION_COLLECT_SKILL_SOURCE_DIR = "information-collect-agent"
+WRITEUP_SKILL_SOURCE_DIR = "writeup-agent"
 MAX_STREAMING_ATTEMPTS = 2
 STREAM_RETRY_BACKOFF_SECONDS = 0.5
 RETRYABLE_STREAM_ERROR_MARKERS = (
@@ -57,28 +66,24 @@ SPECIALIZED_SUBAGENT_DESCRIPTIONS = [
         ),
     },
 ]
-SUBAGENT_DELEGATION_PROMPT = """## Workflow Subagent Delegation
+SUBAGENT_DELEGATION_PROMPT = """## DeepAgent Subagent Delegation
 
-The main agent is one node in a larger execution graph. The graph owns
-specialized workflow subagents and invokes them through graph routing, not
-through the main agent's `task` tool.
+Specialized DeepAgent subagents are available through the `task` tool.
+Use them when their focused role fits the user's request or the current
+penetration-testing workflow.
 
-Workflow-managed specialized subagents:
+Available specialized subagents:
 {subagent_descriptions}
 
 Delegation rules:
-- For writeups, reports, summaries, or final Markdown reporting, do not draft
-  the report directly in the main agent. Preserve the relevant evidence and let
-  the workflow route to `writeup_agent`.
 - For target information collection, reconnaissance briefs, scope extraction,
-  URL/host discovery, or collection planning, do not perform that collection
-  directly in the main agent. Preserve the request context and let the workflow
-  route to `information_collect_agent`.
-- Do not call the `task` tool with `writeup_agent` or
-  `information_collect_agent`; those are graph nodes, not inner DeepAgent task
-  subagents.
-- Use the main agent only to coordinate, verify, gather evidence, and present
-  results that are not owned by a specialized workflow subagent."""
+  URL/host discovery, or collection planning, call `task` with
+  `information_collect_agent` and include the target, scope, and known context.
+- For writeups, reports, summaries, or final Markdown reporting, call `task`
+  with `writeup_agent` and include the relevant evidence, commands, findings,
+  and artifacts.
+- The calling agent only receives the subagent's final result. After a subagent
+  returns, synthesize or present that result to the user as needed."""
 
 
 def is_retryable_stream_error(error: BaseException) -> bool:
@@ -98,10 +103,9 @@ def is_retryable_stream_error(error: BaseException) -> bool:
 class AgentRuntime:
     """Build models, prompts, tools, and execution backends for one run.
 
-    This class deliberately does not own persistence, streaming queue lifetime,
-    or LangGraph routing. It is the execution adapter used by graph nodes when
-    they need an LLM, selected tools, the effective system prompt, or a
-    session-scoped filesystem backend.
+    This class deliberately does not own persistence or streaming queue
+    lifetime. It builds the LLM, selected tools, effective system prompt, and
+    session-scoped filesystem backend for one agent run.
     """
 
     def __init__(
@@ -253,6 +257,33 @@ class AgentRuntime:
                 "skills": skills_sources,
                 "middleware": [ToolCallIdMiddleware()],
             },
+            {
+                "name": INFORMATION_COLLECT_AGENT_NAME,
+                "description": (
+                    "Use proactively for target information collection, "
+                    "reconnaissance briefs, scope extraction, URL/host "
+                    "discovery, and collection plans before deeper "
+                    "penetration-testing work."
+                ),
+                "system_prompt": INFORMATION_COLLECT_SYSTEM_PROMPT,
+                "model": self.build_llm(INFORMATION_COLLECT_AGENT_NAME),
+                "tools": [feroxbuster],
+                "skills": _agent_skill_sources(INFORMATION_COLLECT_SKILL_SOURCE_DIR),
+                "middleware": [ToolCallIdMiddleware()],
+            },
+            {
+                "name": WRITEUP_AGENT_NAME,
+                "description": (
+                    "Use for writeups, reports, summaries, and final Markdown "
+                    "reporting from prior conversation, tool output, evidence, "
+                    "and artifacts."
+                ),
+                "system_prompt": WRITEUP_SYSTEM_PROMPT,
+                "model": self.build_llm(WRITEUP_AGENT_NAME),
+                "tools": [],
+                "skills": _agent_skill_sources(WRITEUP_SKILL_SOURCE_DIR),
+                "middleware": [ToolCallIdMiddleware()],
+            },
         ]
 
     def build_llm(
@@ -261,7 +292,7 @@ class AgentRuntime:
         *,
         streaming: bool = True,
     ) -> Any:
-        """Create a LangChain chat model for the requested graph agent."""
+        """Create a LangChain chat model for the requested agent."""
 
         config = self.agent_config(agent_name)
         provider = config.provider.lower()
@@ -379,6 +410,13 @@ def _main_agent_skill_sources() -> list[str]:
     if _has_skill_dirs(SKILLS_ROOT):
         sources.append(DEEPAGENT_SKILLS_ROUTE)
     return sources
+
+
+def _agent_skill_sources(source_name: str) -> list[str]:
+    source = SKILLS_ROOT / source_name
+    if not _has_skill_dirs(source):
+        return []
+    return [f"{DEEPAGENT_SKILLS_ROUTE}/{source_name}"]
 
 
 def _has_skill_dirs(source: Path) -> bool:

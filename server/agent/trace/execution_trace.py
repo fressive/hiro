@@ -1,82 +1,13 @@
-"""Execution graph metadata and persisted trace normalization."""
+"""Persisted tool and MCP trace normalization."""
 
 import json
 from typing import Any
 
-from server.agent.subagents.writeup_agent import looks_like_writeup
 from server.models.agent import AgentMessage
 
 
-GRAPH_NODES = [
-    {
-        "id": "persist_input",
-        "label": "Persist Input",
-        "description": "Save the user request and assistant placeholder.",
-    },
-    {
-        "id": "prepare_context",
-        "label": "Prepare Context",
-        "description": "Load history, MCP tools, RAG context, and prompts.",
-    },
-    {
-        "id": "information_collect",
-        "label": "Information Collect",
-        "description": "Build a target information brief when requested.",
-        "node_type": "agent",
-        "agent_name": "information_collect_agent",
-    },
-    {
-        "id": "execute_agent",
-        "label": "Execute Agent",
-        "description": "Run the selected agent with tools and skills.",
-        "node_type": "agent",
-        "agent_name": "main_agent",
-    },
-    {
-        "id": "writeup",
-        "label": "Writeup",
-        "description": "Generate a report from prior steps when requested.",
-        "node_type": "agent",
-        "agent_name": "writeup_agent",
-    },
-    {
-        "id": "persist_output",
-        "label": "Persist Output",
-        "description": "Save final messages and token usage.",
-    },
-]
-GRAPH_EDGES = [
-    {"from": "persist_input", "to": "prepare_context"},
-    {
-        "from": "prepare_context",
-        "to": "information_collect",
-        "condition": "information collection requested",
-    },
-    {"from": "prepare_context", "to": "execute_agent", "condition": "default"},
-    {"from": "information_collect", "to": "execute_agent"},
-    {"from": "execute_agent", "to": "writeup", "condition": "report requested"},
-    {"from": "execute_agent", "to": "persist_output", "condition": "default"},
-    {"from": "execute_agent", "to": "information_collect", "condition": "information collect request"},
-    {"from": "writeup", "to": "persist_output"},
-]
-
-
-def initial_graph_nodes() -> list[dict[str, Any]]:
-    return [
-        {
-            "id": node["id"],
-            "label": node["label"],
-            "description": node.get("description"),
-            "node_type": node.get("node_type"),
-            "agent_name": node.get("agent_name"),
-            "status": "pending",
-        }
-        for node in GRAPH_NODES
-    ]
-
-
 def attach_trace_metadata_fallback(messages: list[AgentMessage]) -> None:
-    """Populate graph/tool trace metadata for older messages that lack it."""
+    """Populate tool trace metadata for older messages that lack it."""
     if not messages:
         return
 
@@ -88,7 +19,10 @@ def attach_trace_metadata_fallback(messages: list[AgentMessage]) -> None:
 
     if any(
         isinstance(message.extra_metadata, dict)
-        and message.extra_metadata.get("graph_nodes")
+        and (
+            message.extra_metadata.get("tool_events")
+            or message.extra_metadata.get("mcp_events")
+        )
         for message in assistant_messages
     ):
         return
@@ -104,17 +38,13 @@ def attach_trace_metadata_fallback(messages: list[AgentMessage]) -> None:
     )
     target.extra_metadata = {
         **(target.extra_metadata or {}),
-        "graph_nodes": fallback_graph_nodes(
-            writeup_done=looks_like_writeup(target.content)
-        ),
-        "graph_edges": GRAPH_EDGES,
         "tool_events": tool_events,
         "mcp_events": [],
     }
 
 
 def normalize_trace_metadata(messages: list[AgentMessage]) -> None:
-    """Keep graph/tool trace metadata on one assistant message per user turn."""
+    """Keep tool trace metadata on one assistant message per user turn."""
     group: list[AgentMessage] = []
     for message in messages:
         if message.role == "user" and group:
@@ -154,8 +84,7 @@ def has_trace_metadata(message: AgentMessage) -> bool:
     return bool(
         isinstance(metadata, dict)
         and (
-            metadata.get("graph_nodes")
-            or metadata.get("tool_events")
+            metadata.get("tool_events")
             or metadata.get("mcp_events")
         )
     )
@@ -175,30 +104,9 @@ def trace_message_score(message: AgentMessage) -> int:
 
 def clear_trace_metadata(message: AgentMessage) -> None:
     metadata = dict(message.extra_metadata or {})
-    for key in ("graph_nodes", "graph_edges", "tool_events", "mcp_events"):
+    for key in ("tool_events", "mcp_events"):
         metadata.pop(key, None)
     message.extra_metadata = metadata or None
-
-
-def fallback_graph_nodes(*, writeup_done: bool) -> list[dict[str, Any]]:
-    nodes: list[dict[str, Any]] = []
-    for node in GRAPH_NODES:
-        status = "done"
-        if node["id"] == "information_collect":
-            status = "skipped"
-        if node["id"] == "writeup" and not writeup_done:
-            status = "skipped"
-        nodes.append(
-            {
-                "id": node["id"],
-                "label": node["label"],
-                "description": node.get("description"),
-                "node_type": node.get("node_type"),
-                "agent_name": node.get("agent_name"),
-                "status": status,
-            }
-        )
-    return nodes
 
 
 def reconstruct_tool_events(messages: list[AgentMessage]) -> list[dict[str, Any]]:
