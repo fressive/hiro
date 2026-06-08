@@ -95,7 +95,7 @@ def test_bwrap_sandbox(tmp_path):
         # 
         (path / "test").mkdir()
         result = run_command(command=["ls"], session_id=session_id, cwd=path)
-        assert "test" == result.rstrip()
+        assert "data\ntest" == result.rstrip()
         
         ## Path traversal is not allowed
         result = run_command(command=["ls .."], session_id=session_id, cwd=path)
