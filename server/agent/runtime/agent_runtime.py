@@ -324,6 +324,10 @@ class AgentRuntime:
         """Create the DeepAgent backend for session-local file operations."""
 
         data_path = get_data_path(self.session_id)
+        
+        # Use route to expose the actual path of files on the host to LLM to ensure 
+        # that components not in the bwrap sandbox (MCP Server i.e.) can retrieve the 
+        # file correctly.
         return CompositeBackend(
             default=SessionSandboxedBackend(self.session_id),
             routes={
