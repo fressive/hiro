@@ -1,6 +1,10 @@
 import asyncio
+from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+from pydantic import Field
 
 from server.agent.subagents.information_collect_agent import (
     InformationCollectAgent,
@@ -9,6 +13,30 @@ from server.agent.subagents.information_collect_agent import (
     should_collect_information,
 )
 from server.agent.tools.feroxbuster import run_feroxbuster_scan
+
+
+class FakeToolCallingChatModel(BaseChatModel):
+    responses: list[BaseMessage]
+    calls: list[list[BaseMessage]] = Field(default_factory=list)
+    bound_tools: list[Any] = Field(default_factory=list)
+    i: int = 0
+
+    def bind_tools(self, tools, *, tool_choice=None, **kwargs):
+        self.bound_tools = list(tools)
+        return self
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        raise AssertionError("sync generation should not be used")
+
+    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+        self.calls.append(messages)
+        response = self.responses[self.i]
+        self.i = self.i + 1 if self.i < len(self.responses) - 1 else 0
+        return ChatResult(generations=[ChatGeneration(message=response)])
+
+    @property
+    def _llm_type(self):
+        return "fake-tool-calling-chat-model"
 
 
 def test_should_collect_information_matches_target_or_intent():
@@ -65,40 +93,22 @@ def test_information_collect_agent_builds_context_from_history_and_info():
 
 
 def test_information_collect_agent_uses_feroxbuster_tool(monkeypatch):
-    class FakeLLM:
-        def __init__(self):
-            self.bound_tools = []
-            self.calls = []
-
-        def bind_tools(self, tools):
-            self.bound_tools = tools
-            return self
-
-        async def ainvoke(self, messages, config=None):
-            self.calls.append(messages)
-            if len(self.calls) == 1:
-                assert any(tool.name == "feroxbuster" for tool in self.bound_tools)
-                return AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": "feroxbuster",
-                            "args": {"target_url": "https://target.test"},
-                            "id": "call-ferox",
-                            "type": "tool_call",
-                        }
-                    ],
-                )
-
-            assert any(
-                isinstance(message, ToolMessage)
-                and message.name == "feroxbuster"
-                and "200 /admin" in message.content
-                for message in messages
-            )
-            return AIMessage(content="## Findings\n- Feroxbuster found /admin")
-
-    fake_llm = FakeLLM()
+    fake_llm = FakeToolCallingChatModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "feroxbuster",
+                        "args": {"target_url": "https://target.test"},
+                        "id": "call-ferox",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="## Findings\n- Feroxbuster found /admin"),
+        ]
+    )
     scan_calls = []
 
     def fake_scan(**kwargs):
@@ -119,6 +129,13 @@ def test_information_collect_agent_uses_feroxbuster_tool(monkeypatch):
     result = asyncio.run(agent.generate(history_messages=[]))
 
     assert result.content == "## Findings\n- Feroxbuster found /admin"
+    assert any(tool.name == "feroxbuster" for tool in fake_llm.bound_tools)
+    assert any(
+        isinstance(message, ToolMessage)
+        and message.name == "feroxbuster"
+        and "200 /admin" in message.content
+        for message in fake_llm.calls[-1]
+    )
     assert scan_calls == [
         {
             "session_id": 123,
@@ -132,6 +149,37 @@ def test_information_collect_agent_uses_feroxbuster_tool(monkeypatch):
             "insecure": True,
         }
     ]
+
+
+def test_information_collect_agent_includes_workflow_skill_prompt(tmp_path):
+    skill_dir = tmp_path / "web-information-collecting"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: web-information-collecting\n"
+        "description: Collect website information.\n"
+        "---\n\n"
+        "Use feroxbuster when endpoint discovery is needed.",
+        encoding="utf-8",
+    )
+    fake_llm = FakeToolCallingChatModel(
+        responses=[AIMessage(content="## Findings\n- Done")]
+    )
+
+    agent = InformationCollectAgent(
+        session_id=123,
+        input_text="collect information for https://target.test",
+        build_llm=lambda: fake_llm,
+        skill_dirs=[str(skill_dir)],
+    )
+
+    result = asyncio.run(agent.generate(history_messages=[]))
+
+    system_prompt = fake_llm.calls[0][0].content
+    assert result.content == "## Findings\n- Done"
+    assert "## Workflow Skills" in system_prompt
+    assert "web-information-collecting" in system_prompt
+    assert "Use feroxbuster when endpoint discovery is needed." in system_prompt
 
 
 def test_run_feroxbuster_scan_builds_sandboxed_command(monkeypatch, tmp_path):

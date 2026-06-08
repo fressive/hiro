@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
 
 from langchain_core.messages import (
@@ -17,6 +18,7 @@ from server.core.util import get_data_path
 
 
 MAX_WRITEUP_CONTEXT_CHARS = 60000
+WRITEUP_SKILLS_DIR = Path("./skills/writeup-agent")
 WRITEUP_INTENT_KEYWORDS = (
     "writeup",
     "write up",
@@ -39,6 +41,7 @@ Requirements:
 - Include these sections when applicable: Summary, Scope, Steps Performed, Findings, Evidence, Impact, Recommendations, Artifacts, and Next Steps.
 - If a flag or proof value is present in the evidence, include it explicitly. If none is present, write "Flag: Not found".
 - Return only the report Markdown, with no preamble."""
+WRITEUP_AGENT_NAME = "writeup_agent"
 
 
 def should_generate_writeup(input_text: str) -> bool:
@@ -69,11 +72,13 @@ class WriteupAgent:
         input_text: str,
         build_llm: Callable[[], Any],
         callback: Any | None = None,
+        skill_dirs: list[str] | None = None,
     ) -> None:
         self.session_id = session_id
         self.input_text = input_text
         self._build_llm = build_llm
         self.callback = callback
+        self.skill_dirs = skill_dirs
 
     async def generate(
         self,
@@ -86,9 +91,13 @@ class WriteupAgent:
             history_messages=history_messages,
         )
         config = {"callbacks": [self.callback]} if self.callback is not None else None
+        system_prompt = _append_workflow_skills(
+            WRITEUP_SYSTEM_PROMPT,
+            skill_dirs=self.skill_dirs,
+        )
         result = await self._build_llm().ainvoke(
             [
-                SystemMessage(content=WRITEUP_SYSTEM_PROMPT),
+                SystemMessage(content=system_prompt),
                 HumanMessage(content=report_context),
             ],
             config=config,
@@ -133,6 +142,50 @@ class WriteupAgent:
             "The oldest context was truncated to fit the writeup window.\n\n"
             + context[-MAX_WRITEUP_CONTEXT_CHARS:]
         )
+
+
+def _append_workflow_skills(
+    system_prompt: str,
+    *,
+    skill_dirs: list[str] | None,
+) -> str:
+    rendered_skills = []
+    for skill_dir in _workflow_skill_dirs(skill_dirs):
+        skill_path = skill_dir / "SKILL.md"
+        content = skill_path.read_text(encoding="utf-8").strip()
+        if not content:
+            continue
+        rendered_skills.append(
+            f'<workflow_skill name="{skill_dir.name}" path="{skill_path.as_posix()}">\n'
+            f"{content}\n"
+            "</workflow_skill>"
+        )
+
+    if not rendered_skills:
+        return system_prompt
+
+    return (
+        f"{system_prompt}\n\n"
+        "## Workflow Skills\n\n"
+        "Use these local project skills when they apply to this subagent's task.\n\n"
+        + "\n\n".join(rendered_skills)
+    )
+
+
+def _workflow_skill_dirs(skill_dirs: list[str] | None) -> list[Path]:
+    if skill_dirs is not None:
+        paths = [Path(path) for path in skill_dirs]
+        return [path for path in paths if (path / "SKILL.md").is_file()]
+    if not WRITEUP_SKILLS_DIR.is_dir():
+        return []
+    return sorted(
+        (
+            child
+            for child in WRITEUP_SKILLS_DIR.iterdir()
+            if child.is_dir() and (child / "SKILL.md").is_file()
+        ),
+        key=lambda path: path.as_posix(),
+    )
 
 
 def _format_message_for_writeup(message: Any) -> str:

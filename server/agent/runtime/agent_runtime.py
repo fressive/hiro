@@ -1,9 +1,10 @@
 """LLM construction and execution for session-scoped agents."""
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
-from deepagents import create_deep_agent
+from deepagents import FilesystemPermission, create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 from langchain.chat_models import init_chat_model
@@ -20,6 +21,9 @@ from server.models.llm import LLMConfig
 from server.schemas.agent import AgentRunRequest
 
 SYSTEM_PROMPT = """"""
+SKILLS_ROOT = Path("./skills")
+DEEPAGENT_SKILLS_ROUTE = "/skills"
+MAIN_AGENT_SKILL_SOURCE_DIRS = ("main-agent", "exploit-agent")
 INFORMATION_COLLECT_AGENT_NAME = "information_collect_agent"
 WRITEUP_AGENT_NAME = "writeup_agent"
 MAX_STREAMING_ATTEMPTS = 2
@@ -159,7 +163,7 @@ class AgentRuntime:
         """Run the main agent and return the complete message sequence."""
 
         current_tools = self.selected_builtin_tools() + mcp_tools
-        skills_sources = ["./skills"]
+        skills_sources = _main_agent_skill_sources()
         main_system_prompt = self.build_main_agent_prompt(full_system_prompt)
 
         for attempt in range(1, MAX_STREAMING_ATTEMPTS + 2):
@@ -231,6 +235,7 @@ class AgentRuntime:
             system_prompt=main_system_prompt,
             middleware=[ToolCallIdMiddleware()],
             subagents=self.build_subagents(skills_sources),
+            permissions=self.build_filesystem_permissions(),
         )
         result_state = await agent.ainvoke(
             {"messages": history_messages + [HumanMessage(content=self.input_text)]},
@@ -320,21 +325,66 @@ class AgentRuntime:
             return []
         return [tool for tool in agent_tools if tool.name in self.payload.tools]
 
+    def build_filesystem_permissions(self) -> list[FilesystemPermission]:
+        """Return DeepAgent filesystem permissions for mounted project assets."""
+
+        return [
+            FilesystemPermission(
+                operations=["write"],
+                paths=[
+                    DEEPAGENT_SKILLS_ROUTE,
+                    f"{DEEPAGENT_SKILLS_ROUTE}/**",
+                ],
+                mode="deny",
+            )
+        ]
+
     def build_backend(self) -> CompositeBackend:
         """Create the DeepAgent backend for session-local file operations."""
 
         data_path = get_data_path(self.session_id)
-        
-        # Use route to expose the actual path of files on the host to LLM to ensure 
-        # that components not in the bwrap sandbox (MCP Server i.e.) can retrieve the 
-        # file correctly.
+        routes = {
+            f"{str(data_path.absolute())}/": FilesystemBackend(
+                data_path,
+                virtual_mode=True,
+                max_file_size_mb=1000,
+            )
+        }
+        skills_root = Path(SKILLS_ROOT)
+        if skills_root.is_dir():
+            routes[f"{DEEPAGENT_SKILLS_ROUTE}/"] = FilesystemBackend(
+                skills_root,
+                virtual_mode=True,
+                max_file_size_mb=10,
+            )
+
+        # Expose the host path for components outside bwrap, such as MCP servers.
         return CompositeBackend(
             default=SessionSandboxedBackend(self.session_id),
-            routes={
-                f"{str(data_path.absolute())}/": FilesystemBackend(
-                    data_path,
-                    virtual_mode=True,
-                    max_file_size_mb=1000,
-                )
-            },
+            routes=routes,
         )
+
+
+def _main_agent_skill_sources() -> list[str]:
+    """Return DeepAgent skill sources for the current skills layout."""
+
+    if not SKILLS_ROOT.is_dir():
+        return []
+
+    sources = [
+        f"{DEEPAGENT_SKILLS_ROUTE}/{source_name}"
+        for source_name in MAIN_AGENT_SKILL_SOURCE_DIRS
+        if _has_skill_dirs(SKILLS_ROOT / source_name)
+    ]
+    if _has_skill_dirs(SKILLS_ROOT):
+        sources.append(DEEPAGENT_SKILLS_ROUTE)
+    return sources
+
+
+def _has_skill_dirs(source: Path) -> bool:
+    if not source.is_dir():
+        return False
+    return any(
+        child.is_dir() and (child / "SKILL.md").is_file()
+        for child in source.iterdir()
+    )

@@ -6,13 +6,12 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from langchain.tools import ToolRuntime, tool
-from langchain_core.tools import BaseTool, StructuredTool
 
 from server.agent.runtime.context import SessionContext
 from server.core.util import get_data_path, run_command
 
 
-MAX_TIMEOUT_SECONDS = 300
+MAX_TIMEOUT_SECONDS = 600
 DEFAULT_TIMEOUT_SECONDS = 120
 MAX_OUTPUT_CHARS = 20000
 DEFAULT_THREADS = 10
@@ -86,7 +85,7 @@ def run_feroxbuster_scan(
 
 
 @tool("feroxbuster", description=FEROXBUSTER_DESCRIPTION)
-def feroxbuster(
+async def feroxbuster(
     target_url: str,
     runtime: ToolRuntime[SessionContext],
     wordlist: str | None = None,
@@ -107,38 +106,6 @@ def feroxbuster(
         timeout_seconds=timeout_seconds,
         follow_redirects=follow_redirects,
         insecure=insecure,
-    )
-
-
-def build_session_feroxbuster_tool(session_id: int) -> BaseTool:
-    """Build a session-bound feroxbuster tool for manual subagent tool loops."""
-
-    def session_feroxbuster(
-        target_url: str,
-        wordlist: str | None = None,
-        extensions: str | None = None,
-        depth: int = DEFAULT_DEPTH,
-        threads: int = DEFAULT_THREADS,
-        timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
-        follow_redirects: bool = True,
-        insecure: bool = True,
-    ) -> str:
-        return run_feroxbuster_scan(
-            session_id=session_id,
-            target_url=target_url,
-            wordlist=wordlist,
-            extensions=extensions,
-            depth=depth,
-            threads=threads,
-            timeout_seconds=timeout_seconds,
-            follow_redirects=follow_redirects,
-            insecure=insecure,
-        )
-
-    return StructuredTool.from_function(
-        func=session_feroxbuster,
-        name="feroxbuster",
-        description=FEROXBUSTER_DESCRIPTION,
     )
 
 

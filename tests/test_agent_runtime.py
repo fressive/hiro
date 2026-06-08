@@ -50,6 +50,7 @@ def test_agent_runtime_informs_main_agent_about_workflow_subagents(monkeypatch):
     )
 
     subagents = {subagent["name"]: subagent for subagent in captured["subagents"]}
+    permissions = captured["permissions"]
     assert result[-1].content == "done"
     assert "Workflow Subagent Delegation" in captured["system_prompt"]
     assert "The graph owns" in captured["system_prompt"]
@@ -61,6 +62,9 @@ def test_agent_runtime_informs_main_agent_about_workflow_subagents(monkeypatch):
     assert "writeup_agent" not in subagents
     assert "information_collect_agent" not in subagents
     assert "general-purpose" in subagents
+    assert permissions[0].mode == "deny"
+    assert permissions[0].operations == ["write"]
+    assert "/skills/**" in permissions[0].paths
     assert build_llm_calls == [("main_agent", {"streaming": True})]
 
 

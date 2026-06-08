@@ -1,4 +1,5 @@
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+import asyncio
 
 from server.agent.subagents.writeup_agent import (
     WriteupAgent,
@@ -55,6 +56,44 @@ def test_writeup_agent_builds_context_from_run_messages():
     assert "### Assistant\nfound /admin" in context
     assert "Tool calls:" in context
     assert "### Tool: curl\nHTTP 200" in context
+
+
+def test_writeup_agent_includes_workflow_skill_prompt(tmp_path):
+    skill_dir = tmp_path / "writeup"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: writeup\n"
+        "description: Generate evidence-based reports.\n"
+        "---\n\n"
+        "Include reproduction steps and evidence.",
+        encoding="utf-8",
+    )
+    captured = {}
+
+    class FakeLLM:
+        async def ainvoke(self, messages, config=None):
+            captured["system_prompt"] = messages[0].content
+            return AIMessage(content="# Report\n\nDone")
+
+    agent = WriteupAgent(
+        session_id=123,
+        input_text="generate report",
+        build_llm=lambda: FakeLLM(),
+        skill_dirs=[str(skill_dir)],
+    )
+
+    result = asyncio.run(
+        agent.generate(
+            all_messages=[HumanMessage(content="found /admin")],
+            history_messages=[],
+        )
+    )
+
+    assert result.content == "# Report\n\nDone"
+    assert "## Workflow Skills" in captured["system_prompt"]
+    assert "writeup" in captured["system_prompt"]
+    assert "Include reproduction steps and evidence." in captured["system_prompt"]
 
 
 def test_save_writeup_artifact_writes_writeup_file(tmp_path, monkeypatch):
