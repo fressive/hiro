@@ -23,6 +23,7 @@ import { apiFetch, getApiBaseUrl } from '@/lib/api'
 import type {
   LLMConfig,
   Tool,
+  SubAgent,
   EventRecord,
   SubagentEventRecord,
   AgentSession,
@@ -40,11 +41,13 @@ import { LineChart } from '@/components/ui/chart'
 
 const configs = ref<LLMConfig[]>([])
 const availableTools = ref<Tool[]>([])
+const availableSubagents = ref<SubAgent[]>([])
 const selectedTools = ref<string[]>([])
 const mcpServers = ref<MCPServer[]>([])
 const selectedMcpServers = ref<string[]>([])
 const isLoading = ref(false)
 const isToolsLoading = ref(false)
+const isSubagentsLoading = ref(false)
 const selectedConfigId = ref<number | null>(null)
 const prompt = ref('')
 const output = ref<any[]>([])
@@ -743,6 +746,17 @@ const fetchTools = async () => {
   }
 }
 
+const fetchSubagents = async () => {
+  isSubagentsLoading.value = true
+  try {
+    const response = await apiFetch('/api/v1/agent/subagents')
+    if (!response.ok) return
+    availableSubagents.value = await response.json()
+  } finally {
+    isSubagentsLoading.value = false
+  }
+}
+
 const fetchMcpServers = async () => {
   try {
     const response = await apiFetch('/api/v1/mcp/')
@@ -1269,6 +1283,7 @@ onMounted(async () => {
 
   await fetchConfigs()
   await fetchTools()
+  await fetchSubagents()
   await fetchMcpServers()
   await fetchSessions()
   await fetchSessionTemplates()
@@ -1681,13 +1696,16 @@ watch(
                 v-model:maxTokens="maxTokens"
                 v-model:enable1mContext="enable1mContext"
                 v-model:enableRag="enableRag"
+                v-model:agentConfigs="agentConfigs"
                 :configs="configs"
                 :availableTools="availableTools"
+                :availableSubagents="availableSubagents"
                 :selectedTools="selectedTools"
                 :mcpServers="mcpServers"
                 :selectedMcpServers="selectedMcpServers"
                 :isLoading="isLoading"
                 :isToolsLoading="isToolsLoading"
+                :isSubagentsLoading="isSubagentsLoading"
                 :isRunning="isRunning"
                 :templates="sessionTemplates"
                 @save-template="openSaveTemplateDialog"

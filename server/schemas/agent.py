@@ -29,6 +29,13 @@ class ToolResponse(BaseModel):
     description: str
 
 
+class SubAgentResponse(BaseModel):
+    """Subagent information response schema."""
+
+    name: str
+    description: str
+
+
 class AgentSessionCreate(BaseModel):
     """Agent session creation schema."""
 

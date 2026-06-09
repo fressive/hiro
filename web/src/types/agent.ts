@@ -11,6 +11,11 @@ export type Tool = {
   description: string
 }
 
+export type SubAgent = {
+  name: string
+  description: string
+}
+
 export type EventRecord = {
   id: string
   name: string

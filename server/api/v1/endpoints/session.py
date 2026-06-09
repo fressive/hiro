@@ -29,6 +29,7 @@ from server.agent.trace.execution_trace import (
     attach_trace_metadata_fallback,
     normalize_trace_metadata,
 )
+from server.agent.subagents import load_subagent_classes
 from server.agent.tools import agent_tools
 from server.db import AsyncSessionLocal, get_session
 from server.models.agent import AgentMessage, AgentSession, AgentSessionTemplate
@@ -45,6 +46,7 @@ from server.schemas.agent import (
     AgentSessionTemplateResponse,
     AgentMessageResponse,
     ToolResponse,
+    SubAgentResponse,
     SessionFileResponse,
 )
 
@@ -429,6 +431,18 @@ async def list_tools():
     return [
         ToolResponse(name=tool.name, description=tool.description)
         for tool in agent_tools
+    ]
+
+
+@router.get("/subagents", response_model=List[SubAgentResponse])
+async def list_subagents():
+    """List configurable specialized subagents."""
+    return [
+        SubAgentResponse(
+            name=subagent_class.name,
+            description=subagent_class.description,
+        )
+        for subagent_class in load_subagent_classes()
     ]
 
 

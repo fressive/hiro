@@ -7,16 +7,18 @@ import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
 import { CardContent } from '@/components/ui/card'
-import type { LLMConfig, AgentSessionTemplate, Tool, MCPServer } from '@/types/agent'
+import type { LLMConfig, AgentSessionTemplate, Tool, SubAgent, MCPServer } from '@/types/agent'
 
 const props = defineProps<{
   templates: AgentSessionTemplate[]
   canSaveTemplate: boolean
   configs: LLMConfig[]
   availableTools: Tool[]
+  availableSubagents: SubAgent[]
   selectedTools: string[]
   mcpServers: MCPServer[]
   selectedMcpServers: string[]
+  agentConfigs: Record<string, number | null>
   systemPrompt: string
   temperature: number
   maxTokens: number
@@ -24,6 +26,7 @@ const props = defineProps<{
   enableRag: boolean
   isLoading: boolean
   isToolsLoading: boolean
+  isSubagentsLoading: boolean
   isRunning: boolean
   selectedConfigId: number | null
 }>()
@@ -35,6 +38,7 @@ const emit = defineEmits<{
   (e: 'update:maxTokens', val: number): void
   (e: 'update:enable1mContext', val: boolean): void
   (e: 'update:enableRag', val: boolean): void
+  (e: 'update:agentConfigs', val: Record<string, number | null>): void
   (e: 'save-template'): void
   (e: 'apply-template', templateId: number): void
   (e: 'delete-template', templateId: number): void
@@ -44,6 +48,7 @@ const emit = defineEmits<{
 
 const showTools = ref(false)
 const showMcp = ref(false)
+const showSubagents = ref(false)
 const selectedTemplateId = ref<number | null>(null)
 const isEditingTemperature = ref(false)
 const isEditingMaxTokens = ref(false)
@@ -131,6 +136,36 @@ const onConfigChange = (e: Event) => {
   emit('update:selectedConfigId', target.value ? Number(target.value) : null)
 }
 
+const mainModelLabel = computed(() => {
+  const config = props.configs.find((item) => item.id === props.selectedConfigId)
+  if (!config) return 'main model'
+  return `${config.name} · ${config.model}`
+})
+
+const subagentConfigValue = (agentName: string) => {
+  const value = props.agentConfigs?.[agentName]
+  return typeof value === 'number' ? String(value) : ''
+}
+
+const formatSubagentName = (name: string) => (
+  name
+    .split('_')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+)
+
+const onSubagentConfigChange = (agentName: string, e: Event) => {
+  const target = e.target as HTMLSelectElement
+  const nextConfigs = { ...(props.agentConfigs || {}) }
+  if (!target.value) {
+    delete nextConfigs[agentName]
+  } else {
+    nextConfigs[agentName] = Number(target.value)
+  }
+  emit('update:agentConfigs', nextConfigs)
+}
+
 watch(
   () => props.templates,
   (templates) => {
@@ -204,6 +239,49 @@ const deleteSelectedTemplate = () => {
           {{ config.name }} · {{ config.model }}
         </option>
       </select>
+    </div>
+
+    <div class="space-y-2">
+      <div class="flex items-center justify-between">
+        <Label>Subagents</Label>
+        <Button variant="ghost" size="sm" class="h-8 px-2" @click="showSubagents = !showSubagents">
+          <ChevronUp v-if="showSubagents" class="h-4 w-4" />
+          <ChevronDown v-else class="h-4 w-4" />
+        </Button>
+      </div>
+      <div v-if="showSubagents" class="space-y-3 border-t pt-3 animate-in fade-in slide-in-from-top-1">
+        <div v-if="isSubagentsLoading" class="flex items-center gap-2 text-xs text-muted-foreground">
+          <Loader2 class="h-3 w-3 animate-spin" />
+          Loading subagents...
+        </div>
+        <div v-else-if="availableSubagents.length === 0" class="text-xs text-muted-foreground">
+          No specialized subagents available.
+        </div>
+        <div v-else class="grid gap-3">
+          <div v-for="subagent in availableSubagents" :key="subagent.name" class="space-y-1.5">
+            <div class="flex min-w-0 items-center justify-between gap-2">
+              <Label :for="`subagent-model-${subagent.name}`" class="min-w-0 truncate text-xs">
+                {{ formatSubagentName(subagent.name) }}
+              </Label>
+            </div>
+            <select
+              :id="`subagent-model-${subagent.name}`"
+              :value="subagentConfigValue(subagent.name)"
+              @change="onSubagentConfigChange(subagent.name, $event)"
+              class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-xs ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="configs.length === 0 || isRunning"
+            >
+              <option :value="''">Use main model · {{ mainModelLabel }}</option>
+              <option v-for="config in configs" :key="config.id" :value="config.id">
+                {{ config.name }} · {{ config.model }}
+              </option>
+            </select>
+            <p class="line-clamp-2 text-[10px] text-muted-foreground">
+              {{ subagent.description }}
+            </p>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div class="space-y-2">
