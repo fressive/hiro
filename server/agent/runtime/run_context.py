@@ -1,6 +1,7 @@
 """Per-run state shared across a custom agent execution."""
 
 import asyncio
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -22,6 +23,10 @@ class AgentRunContext:
 
     # Signals the periodic assistant placeholder updater to flush and stop.
     agent_done: asyncio.Event
+
+    # Compatibility hook for older run setup paths that keep async resources
+    # alive for the duration of one agent execution.
+    exit_stack: AsyncExitStack | None = None
 
     # Background task that periodically writes live output and trace metadata
     # into the assistant placeholder.

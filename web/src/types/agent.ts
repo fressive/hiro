@@ -18,6 +18,7 @@ export type EventRecord = {
   input?: string
   output?: string
   agent?: string
+  agent_path?: string
 }
 
 export type SubagentEventRecord = {

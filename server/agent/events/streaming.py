@@ -290,6 +290,7 @@ class StreamCallbackHandler(BaseCallbackHandler):
         event_id: str,
         input_text: str,
         agent_name: str | None = None,
+        agent_path: str | None = None,
     ) -> None:
         """Record a tool start event from callbacks or event streaming."""
 
@@ -307,11 +308,15 @@ class StreamCallbackHandler(BaseCallbackHandler):
         }
         if agent_name:
             event["agent"] = agent_name
+        if agent_path:
+            event["agent_path"] = agent_path
         self._upsert_tool_event(tool_name, event)
 
         data = {"id": event_id, "name": tool_name, "input": input_text}
         if agent_name:
             data["agent"] = agent_name
+        if agent_path:
+            data["agent_path"] = agent_path
         self._enqueue(tool_event_name(tool_name, "start"), data)
 
     def record_tool_end(
@@ -321,6 +326,7 @@ class StreamCallbackHandler(BaseCallbackHandler):
         event_id: str,
         output_text: str,
         agent_name: str | None = None,
+        agent_path: str | None = None,
     ) -> None:
         """Record a tool completion event from callbacks or event streaming."""
 
@@ -332,11 +338,15 @@ class StreamCallbackHandler(BaseCallbackHandler):
         }
         if agent_name:
             event["agent"] = agent_name
+        if agent_path:
+            event["agent_path"] = agent_path
         self._upsert_tool_event(tool_name, event)
 
         data = {"id": event_id, "name": tool_name, "output": output_text}
         if agent_name:
             data["agent"] = agent_name
+        if agent_path:
+            data["agent_path"] = agent_path
         self._enqueue(tool_event_name(tool_name, "end"), data)
 
     def record_tool_error(
@@ -346,6 +356,7 @@ class StreamCallbackHandler(BaseCallbackHandler):
         event_id: str,
         output_text: str,
         agent_name: str | None = None,
+        agent_path: str | None = None,
     ) -> None:
         """Record a tool error event from callbacks or event streaming."""
 
@@ -357,11 +368,15 @@ class StreamCallbackHandler(BaseCallbackHandler):
         }
         if agent_name:
             event["agent"] = agent_name
+        if agent_path:
+            event["agent_path"] = agent_path
         self._upsert_tool_event(tool_name, event)
 
         data = {"id": event_id, "name": tool_name, "output": output_text}
         if agent_name:
             data["agent"] = agent_name
+        if agent_path:
+            data["agent_path"] = agent_path
         self._enqueue(tool_event_name(tool_name, "error"), data)
 
     def record_subagent_start(

@@ -309,11 +309,43 @@ const latestPersistedSubagentEvents = computed<SubagentEventRecord[]>(() => {
   return []
 })
 
+const latestPersistedTraceMetadata = computed(() => {
+  for (let index = messages.value.length - 1; index >= 0; index -= 1) {
+    const message = messages.value[index]
+    const metadata = message.extra_metadata
+    if (
+      message.role === 'assistant'
+      && (
+        metadata?.tool_events?.length
+        || metadata?.mcp_events?.length
+        || metadata?.subagent_events?.length
+      )
+    ) {
+      return metadata
+    }
+  }
+  return null
+})
+
 const visibleSubagentEvents = computed(() => {
   if (isRunning.value || subagentEvents.value.length > 0) {
     return subagentEvents.value
   }
-  return latestPersistedSubagentEvents.value
+  return latestPersistedTraceMetadata.value?.subagent_events || latestPersistedSubagentEvents.value
+})
+
+const visibleToolEvents = computed(() => {
+  if (isRunning.value || toolEvents.value.length > 0 || mcpEvents.value.length > 0 || subagentEvents.value.length > 0) {
+    return toolEvents.value
+  }
+  return latestPersistedTraceMetadata.value?.tool_events || []
+})
+
+const visibleMcpEvents = computed(() => {
+  if (isRunning.value || toolEvents.value.length > 0 || mcpEvents.value.length > 0 || subagentEvents.value.length > 0) {
+    return mcpEvents.value
+  }
+  return latestPersistedTraceMetadata.value?.mcp_events || []
 })
 
 const scrollResponseToBottom = async () => {
@@ -1073,6 +1105,8 @@ const applyEvent = (event: string, payload: any) => {
       name: payload.name || 'tool',
       status: 'running',
       input: payload.input,
+      agent: payload.agent,
+      agent_path: payload.agent_path,
     })
     appendLiveToolBlock('tool', eventId)
     return
@@ -1084,6 +1118,8 @@ const applyEvent = (event: string, payload: any) => {
       name: payload.name || 'tool',
       status: 'done',
       output: payload.output,
+      agent: payload.agent,
+      agent_path: payload.agent_path,
     })
     return
   }
@@ -1094,6 +1130,8 @@ const applyEvent = (event: string, payload: any) => {
       name: payload.name || 'tool',
       status: 'error',
       output: payload.output,
+      agent: payload.agent,
+      agent_path: payload.agent_path,
     })
     return
   }
@@ -1105,6 +1143,8 @@ const applyEvent = (event: string, payload: any) => {
       name: payload.name || 'mcp',
       status: 'running',
       input: payload.input,
+      agent: payload.agent,
+      agent_path: payload.agent_path,
     })
     appendLiveToolBlock('mcp', eventId)
     return
@@ -1116,6 +1156,8 @@ const applyEvent = (event: string, payload: any) => {
       name: payload.name || 'mcp',
       status: 'done',
       output: payload.output,
+      agent: payload.agent,
+      agent_path: payload.agent_path,
     })
     return
   }
@@ -1126,6 +1168,8 @@ const applyEvent = (event: string, payload: any) => {
       name: payload.name || 'mcp',
       status: 'error',
       output: payload.output,
+      agent: payload.agent,
+      agent_path: payload.agent_path,
     })
   }
 }
@@ -1322,6 +1366,8 @@ watch(
               <aside class="h-56 shrink-0 overflow-hidden border-b xl:h-full xl:w-72 xl:border-b-0 xl:border-r 2xl:w-80">
                 <AgentCallGraph
                   :subagent-events="visibleSubagentEvents"
+                  :tool-events="visibleToolEvents"
+                  :mcp-events="visibleMcpEvents"
                   :is-running="isRunning"
                 />
               </aside>

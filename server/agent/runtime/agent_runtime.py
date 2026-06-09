@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-from deepagents import FilesystemPermission, create_deep_agent
+from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 from langchain.chat_models import init_chat_model
@@ -297,6 +297,7 @@ class AgentRuntime:
                         tool_call_iter,
                         callback=callback,
                         agent_name=None,
+                        agent_path=None,
                     )
                 )
             if subagent_iter is not None:
@@ -342,7 +343,6 @@ class AgentRuntime:
             system_prompt=main_system_prompt,
             middleware=[ToolCallIdMiddleware()],
             subagents=self.build_subagents(skills_sources),
-            permissions=self.build_filesystem_permissions(),
         )
 
     def build_input_content(self, run_context_prompt: str) -> str:
@@ -486,20 +486,6 @@ class AgentRuntime:
                 lambda: self.payload.mcp_servers,
             )
         return self._mcp_router_tools
-
-    def build_filesystem_permissions(self) -> list[FilesystemPermission]:
-        """Return DeepAgent filesystem permissions for mounted project assets."""
-
-        return [
-            FilesystemPermission(
-                operations=["write"],
-                paths=[
-                    DEEPAGENT_SKILLS_ROUTE,
-                    f"{DEEPAGENT_SKILLS_ROUTE}/**",
-                ],
-                mode="deny",
-            )
-        ]
 
     def build_backend(self) -> CompositeBackend:
         """Create the DeepAgent backend for session-local file operations."""
@@ -651,6 +637,7 @@ async def _consume_tool_call_streams(
     *,
     callback: StreamCallbackHandler,
     agent_name: str | None,
+    agent_path: str | None,
 ) -> None:
     async with asyncio.TaskGroup() as task_group:
         async for tool_call in tool_call_iter:
@@ -661,6 +648,7 @@ async def _consume_tool_call_streams(
                 event_id=event_id,
                 input_text=_json_text(getattr(tool_call, "input", None)),
                 agent_name=agent_name,
+                agent_path=agent_path,
             )
             delta_iter = _value_aiter(getattr(tool_call, "output_deltas", None))
             task_group.create_task(
@@ -671,6 +659,7 @@ async def _consume_tool_call_streams(
                     tool_name=tool_name,
                     event_id=event_id,
                     agent_name=agent_name,
+                    agent_path=agent_path,
                 )
             )
 
@@ -683,6 +672,7 @@ async def _consume_tool_call(
     tool_name: str,
     event_id: str,
     agent_name: str | None,
+    agent_path: str | None,
 ) -> None:
     output_parts: list[str] = []
     try:
@@ -695,6 +685,7 @@ async def _consume_tool_call(
             event_id=event_id,
             output_text=str(exc),
             agent_name=agent_name,
+            agent_path=agent_path,
         )
         raise
 
@@ -705,6 +696,7 @@ async def _consume_tool_call(
             event_id=event_id,
             output_text=str(error),
             agent_name=agent_name,
+            agent_path=agent_path,
         )
         return
 
@@ -719,6 +711,7 @@ async def _consume_tool_call(
         event_id=event_id,
         output_text=output_text,
         agent_name=agent_name,
+        agent_path=agent_path,
     )
 
 
@@ -781,6 +774,7 @@ async def _consume_subagent(
                         tool_call_iter,
                         callback=callback,
                         agent_name=name,
+                        agent_path=path,
                     )
                 )
             if nested_subagent_iter is not None:

@@ -168,7 +168,6 @@ def test_agent_runtime_registers_specialized_deepagent_subagents(monkeypatch):
     )
 
     subagents = {subagent["name"]: subagent for subagent in captured["subagents"]}
-    permissions = captured["permissions"]
     assert result[-1].content == "done"
     assert "DeepAgent Subagent Delegation" in captured["system_prompt"]
     assert "Specialized DeepAgent subagents" in captured["system_prompt"]
@@ -184,9 +183,6 @@ def test_agent_runtime_registers_specialized_deepagent_subagents(monkeypatch):
     assert subagents["information_collect_agent"]["tools"][0].name == "feroxbuster"
     assert subagents["writeup_agent"]["model"] == "model:writeup_agent"
     assert subagents["writeup_agent"]["tools"] == []
-    assert permissions[0].mode == "deny"
-    assert permissions[0].operations == ["write"]
-    assert "/skills/**" in permissions[0].paths
     assert build_llm_calls == [
         ("main_agent", {"streaming": True}),
         ("information_collect_agent", {}),
@@ -408,6 +404,7 @@ def test_agent_runtime_consumes_deepagent_event_stream(monkeypatch):
     assert callback.mcp_events[0]["name"] == "mcp_call"
     assert callback.tool_events[0]["name"] == "feroxbuster"
     assert callback.tool_events[0]["agent"] == "writeup_agent"
+    assert callback.tool_events[0]["agent_path"] == "tools:1"
     assert callback.subagent_events == [
         {
             "id": "tools:1",

@@ -151,6 +151,8 @@ class CustomAgent:
                 update_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await update_task
+            if run_context is not None and run_context.exit_stack is not None:
+                await run_context.exit_stack.aclose()
             if on_task_done:
                 on_task_done()
             await queue.put(None)
