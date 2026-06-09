@@ -39,6 +39,18 @@ class FakeToolCallingChatModel(BaseChatModel):
         return "fake-tool-calling-chat-model"
 
 
+def _message_text(message: BaseMessage) -> str:
+    content = message.content
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            block.get("text", str(block)) if isinstance(block, dict) else str(block)
+            for block in content
+        )
+    return str(content)
+
+
 def test_should_collect_information_matches_target_or_intent():
     assert should_collect_information("collect information for https://target.test")
     assert should_collect_information("请对这个站点做信息收集")
@@ -151,9 +163,10 @@ def test_information_collect_agent_uses_feroxbuster_tool(monkeypatch):
     ]
 
 
-def test_information_collect_agent_includes_workflow_skill_prompt(tmp_path):
-    skill_dir = tmp_path / "web-information-collecting"
-    skill_dir.mkdir()
+def test_information_collect_agent_passes_skill_sources_to_deepagent(tmp_path):
+    skills_root = tmp_path / "information-collect-agent"
+    skill_dir = skills_root / "web-information-collecting"
+    skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
         "---\n"
         "name: web-information-collecting\n"
@@ -170,16 +183,16 @@ def test_information_collect_agent_includes_workflow_skill_prompt(tmp_path):
         session_id=123,
         input_text="collect information for https://target.test",
         build_llm=lambda: fake_llm,
-        skill_dirs=[str(skill_dir)],
+        skills=[str(skills_root)],
     )
 
     result = asyncio.run(agent.generate(history_messages=[]))
 
-    system_prompt = fake_llm.calls[0][0].content
+    system_prompt = _message_text(fake_llm.calls[0][0])
     assert result.content == "## Findings\n- Done"
-    assert "## Workflow Skills" in system_prompt
     assert "web-information-collecting" in system_prompt
-    assert "Use feroxbuster when endpoint discovery is needed." in system_prompt
+    assert "Collect website information." in system_prompt
+    assert f"{skill_dir.as_posix()}/SKILL.md" in system_prompt
 
 
 def test_run_feroxbuster_scan_builds_sandboxed_command(monkeypatch, tmp_path):

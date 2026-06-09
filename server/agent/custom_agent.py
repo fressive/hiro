@@ -21,8 +21,6 @@ from server.schemas.agent import AgentRunRequest
 from server.service.rag_service import RagService
 
 MAIN_AGENT_NAME = "main_agent"
-INFORMATION_COLLECT_AGENT_NAME = "information_collect_agent"
-WRITEUP_AGENT_NAME = "writeup_agent"
 
 
 class CustomAgent:
@@ -231,13 +229,7 @@ class CustomAgent:
         }
 
     def agent_model_names(self) -> dict[str, str]:
-        return {
-            INFORMATION_COLLECT_AGENT_NAME: self._runtime.agent_model_name(
-                INFORMATION_COLLECT_AGENT_NAME
-            ),
-            MAIN_AGENT_NAME: self._runtime.agent_model_name(MAIN_AGENT_NAME),
-            WRITEUP_AGENT_NAME: self._runtime.agent_model_name(WRITEUP_AGENT_NAME),
-        }
+        return self._runtime.agent_model_names()
 
     async def _load_rag_context(self) -> None:
         if self._rag_loaded or not self.payload.enable_rag:

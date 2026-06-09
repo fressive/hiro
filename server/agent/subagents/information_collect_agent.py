@@ -3,19 +3,18 @@
 import json
 import re
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Callable
 
-from langchain.agents import create_agent
+from deepagents import create_deep_agent
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
     HumanMessage,
-    SystemMessage,
     ToolMessage,
 )
 
 from server.agent.runtime.context import SessionContext
+from server.agent.subagents.base import SubAgent
 from server.agent.tools.feroxbuster import feroxbuster
 from server.agent.utils.tool_call_ids import (
     ToolCallIdMiddleware,
@@ -26,7 +25,6 @@ from server.core.util import get_data_path
 
 MAX_INFORMATION_CONTEXT_CHARS = 40000
 MAX_EXISTING_INFO_CHARS = 20000
-INFORMATION_COLLECT_SKILLS_DIR = Path("./skills/information-collect-agent")
 URL_PATTERN = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
 INFORMATION_COLLECT_INTENT_KEYWORDS = (
     "information collect",
@@ -121,8 +119,28 @@ def append_information_collect_artifact(
     info_path.write_text(entry.lstrip(), encoding="utf-8")
 
 
-class InformationCollectAgent:
+class InformationCollectAgent(SubAgent):
     """Create a pre-run information collection brief for the main agent."""
+
+    name = INFORMATION_COLLECT_AGENT_NAME
+    description = (
+        "Use proactively for target information collection, reconnaissance "
+        "briefs, scope extraction, URL/host discovery, and collection plans "
+        "before deeper penetration-testing work."
+    )
+    system_prompt = INFORMATION_COLLECT_SYSTEM_PROMPT
+    skill_source_dir = "information-collect-agent"
+    delegation_rule = (
+        "For target information collection, reconnaissance briefs, scope "
+        "extraction, URL/host discovery, or collection planning, call `task` "
+        f"with `{INFORMATION_COLLECT_AGENT_NAME}` and include the target, "
+        "scope, and known context."
+    )
+    order = 10
+
+    @classmethod
+    def tools(cls) -> list[Any]:
+        return [feroxbuster]
 
     def __init__(
         self,
@@ -131,14 +149,14 @@ class InformationCollectAgent:
         input_text: str,
         build_llm: Callable[[], Any],
         callback: Any | None = None,
-        skill_dirs: list[str] | None = None,
+        skills: list[str] | None = None,
     ) -> None:
         self.session_id = session_id
         self.input_text = input_text
         self._build_llm = build_llm
         self.callback = callback
         self.tools = [feroxbuster]
-        self.skill_dirs = skill_dirs
+        self.skill_sources = skills
 
     async def generate(
         self,
@@ -147,20 +165,19 @@ class InformationCollectAgent:
     ) -> AIMessage:
         collection_context = self.build_context(history_messages=history_messages)
         config = {"callbacks": [self.callback]} if self.callback is not None else None
-        system_prompt = _append_workflow_skills(
-            INFORMATION_COLLECT_SYSTEM_PROMPT,
-            skill_dirs=self.skill_dirs,
-        )
+        skill_sources = self.local_skill_sources(self.skill_sources)
         messages: list[BaseMessage] = [
             HumanMessage(content=collection_context),
         ]
-        agent = create_agent(
+        agent = create_deep_agent(
             model=self._build_llm(),
             tools=self.tools,
-            system_prompt=SystemMessage(content=system_prompt),
+            system_prompt=INFORMATION_COLLECT_SYSTEM_PROMPT,
             middleware=[ToolCallIdMiddleware()],
             context_schema=SessionContext,
             name=INFORMATION_COLLECT_AGENT_NAME,
+            skills=skill_sources or None,
+            backend=self.local_skills_backend(skill_sources),
         )
 
         result_state = await agent.ainvoke(
@@ -232,50 +249,6 @@ def _state_messages(result_state: Any) -> list[BaseMessage]:
     if not isinstance(result_messages, list):
         result_messages = [result_messages]
     return normalize_model_messages(result_messages)
-
-
-def _append_workflow_skills(
-    system_prompt: str,
-    *,
-    skill_dirs: list[str] | None,
-) -> str:
-    rendered_skills = []
-    for skill_dir in _workflow_skill_dirs(skill_dirs):
-        skill_path = skill_dir / "SKILL.md"
-        content = skill_path.read_text(encoding="utf-8").strip()
-        if not content:
-            continue
-        rendered_skills.append(
-            f'<workflow_skill name="{skill_dir.name}" path="{skill_path.as_posix()}">\n'
-            f"{content}\n"
-            "</workflow_skill>"
-        )
-
-    if not rendered_skills:
-        return system_prompt
-
-    return (
-        f"{system_prompt}\n\n"
-        "## Workflow Skills\n\n"
-        "Use these local project skills when they apply to this subagent's task.\n\n"
-        + "\n\n".join(rendered_skills)
-    )
-
-
-def _workflow_skill_dirs(skill_dirs: list[str] | None) -> list[Path]:
-    if skill_dirs is not None:
-        paths = [Path(path) for path in skill_dirs]
-        return [path for path in paths if (path / "SKILL.md").is_file()]
-    if not INFORMATION_COLLECT_SKILLS_DIR.is_dir():
-        return []
-    return sorted(
-        (
-            child
-            for child in INFORMATION_COLLECT_SKILLS_DIR.iterdir()
-            if child.is_dir() and (child / "SKILL.md").is_file()
-        ),
-        key=lambda path: path.as_posix(),
-    )
 
 
 def _last_ai_message(messages: list[BaseMessage]) -> AIMessage | None:

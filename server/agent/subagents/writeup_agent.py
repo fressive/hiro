@@ -2,23 +2,26 @@
 
 import json
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Callable
 
+from deepagents import create_deep_agent
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
     HumanMessage,
-    SystemMessage,
     ToolMessage,
 )
 
-from server.agent.utils.tool_call_ids import normalize_model_messages
+from server.agent.runtime.context import SessionContext
+from server.agent.subagents.base import SubAgent
+from server.agent.utils.tool_call_ids import (
+    ToolCallIdMiddleware,
+    normalize_model_messages,
+)
 from server.core.util import get_data_path
 
 
 MAX_WRITEUP_CONTEXT_CHARS = 60000
-WRITEUP_SKILLS_DIR = Path("./skills/writeup-agent")
 WRITEUP_INTENT_KEYWORDS = (
     "writeup",
     "write up",
@@ -64,8 +67,22 @@ def save_writeup_artifact(session_id: int, report_markdown: str) -> None:
     (data_path / "WRITEUP.md").write_text(report_markdown, encoding="utf-8")
 
 
-class WriteupAgent:
+class WriteupAgent(SubAgent):
     """Generate a Markdown report from a completed agent run."""
+
+    name = WRITEUP_AGENT_NAME
+    description = (
+        "Use for writeups, reports, summaries, and final Markdown reporting "
+        "from prior conversation, tool output, evidence, and artifacts."
+    )
+    system_prompt = WRITEUP_SYSTEM_PROMPT
+    skill_source_dir = "writeup-agent"
+    delegation_rule = (
+        "For writeups, reports, summaries, or final Markdown reporting, call "
+        f"`task` with `{WRITEUP_AGENT_NAME}` and include the relevant evidence, "
+        "commands, findings, and artifacts."
+    )
+    order = 20
 
     def __init__(
         self,
@@ -74,13 +91,13 @@ class WriteupAgent:
         input_text: str,
         build_llm: Callable[[], Any],
         callback: Any | None = None,
-        skill_dirs: list[str] | None = None,
+        skills: list[str] | None = None,
     ) -> None:
         self.session_id = session_id
         self.input_text = input_text
         self._build_llm = build_llm
         self.callback = callback
-        self.skill_dirs = skill_dirs
+        self.skill_sources = skills
 
     async def generate(
         self,
@@ -93,25 +110,29 @@ class WriteupAgent:
             history_messages=history_messages,
         )
         config = {"callbacks": [self.callback]} if self.callback is not None else None
-        system_prompt = _append_workflow_skills(
-            WRITEUP_SYSTEM_PROMPT,
-            skill_dirs=self.skill_dirs,
+        skill_sources = self.local_skill_sources(self.skill_sources)
+        agent = create_deep_agent(
+            model=self._build_llm(),
+            tools=[],
+            system_prompt=WRITEUP_SYSTEM_PROMPT,
+            middleware=[ToolCallIdMiddleware()],
+            context_schema=SessionContext,
+            name=WRITEUP_AGENT_NAME,
+            skills=skill_sources or None,
+            backend=self.local_skills_backend(skill_sources),
         )
-        result = await self._build_llm().ainvoke(
-            [
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=report_context),
-            ],
+        result_state = await agent.ainvoke(
+            {"messages": [HumanMessage(content=report_context)]},
             config=config,
+            context=SessionContext(self.session_id),
         )
-        result_messages = result if isinstance(result, list) else [result]
-        normalized_messages = normalize_model_messages(result_messages)
+        normalized_messages = _state_messages(result_state)
         for message in reversed(normalized_messages):
             if isinstance(message, AIMessage):
                 return message
         return AIMessage(
             content="\n\n".join(
-                _extract_message_text(message) for message in result_messages
+                _extract_message_text(message) for message in normalized_messages
             )
         )
 
@@ -146,48 +167,14 @@ class WriteupAgent:
         )
 
 
-def _append_workflow_skills(
-    system_prompt: str,
-    *,
-    skill_dirs: list[str] | None,
-) -> str:
-    rendered_skills = []
-    for skill_dir in _workflow_skill_dirs(skill_dirs):
-        skill_path = skill_dir / "SKILL.md"
-        content = skill_path.read_text(encoding="utf-8").strip()
-        if not content:
-            continue
-        rendered_skills.append(
-            f'<workflow_skill name="{skill_dir.name}" path="{skill_path.as_posix()}">\n'
-            f"{content}\n"
-            "</workflow_skill>"
-        )
-
-    if not rendered_skills:
-        return system_prompt
-
-    return (
-        f"{system_prompt}\n\n"
-        "## Workflow Skills\n\n"
-        "Use these local project skills when they apply to this subagent's task.\n\n"
-        + "\n\n".join(rendered_skills)
-    )
-
-
-def _workflow_skill_dirs(skill_dirs: list[str] | None) -> list[Path]:
-    if skill_dirs is not None:
-        paths = [Path(path) for path in skill_dirs]
-        return [path for path in paths if (path / "SKILL.md").is_file()]
-    if not WRITEUP_SKILLS_DIR.is_dir():
-        return []
-    return sorted(
-        (
-            child
-            for child in WRITEUP_SKILLS_DIR.iterdir()
-            if child.is_dir() and (child / "SKILL.md").is_file()
-        ),
-        key=lambda path: path.as_posix(),
-    )
+def _state_messages(result_state: Any) -> list[BaseMessage]:
+    if isinstance(result_state, dict):
+        result_messages = result_state.get("messages", [])
+    else:
+        result_messages = result_state
+    if not isinstance(result_messages, list):
+        result_messages = [result_messages]
+    return normalize_model_messages(result_messages)
 
 
 def _format_message_for_writeup(message: Any) -> str:

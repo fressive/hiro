@@ -17,16 +17,8 @@ from server.agent.events.streaming import StreamCallbackHandler
 from server.agent.runtime.context import SessionContext
 from server.agent.runtime.mcp_loader import create_dynamic_mcp_router_tools
 from server.agent.runtime.sandboxed_backend import SessionSandboxedBackend
-from server.agent.subagents.information_collect_agent import (
-    INFORMATION_COLLECT_AGENT_NAME,
-    INFORMATION_COLLECT_SYSTEM_PROMPT,
-)
-from server.agent.subagents.writeup_agent import (
-    WRITEUP_AGENT_NAME,
-    WRITEUP_SYSTEM_PROMPT,
-)
+from server.agent.subagents import SubAgent, load_subagent_classes
 from server.agent.tools import agent_tools
-from server.agent.tools.feroxbuster import feroxbuster
 from server.agent.utils.tool_call_ids import ToolCallIdMiddleware
 from server.core.logger import logger
 from server.core.util import get_data_path
@@ -37,8 +29,6 @@ SYSTEM_PROMPT = """"""
 SKILLS_ROOT = Path("./skills")
 DEEPAGENT_SKILLS_ROUTE = "/skills"
 MAIN_AGENT_SKILL_SOURCE_DIRS = ("main-agent", "exploit-agent")
-INFORMATION_COLLECT_SKILL_SOURCE_DIR = "information-collect-agent"
-WRITEUP_SKILL_SOURCE_DIR = "writeup-agent"
 MAX_STREAMING_ATTEMPTS = 2
 STREAM_RETRY_BACKOFF_SECONDS = 0.5
 RETRYABLE_STREAM_ERROR_MARKERS = (
@@ -53,23 +43,6 @@ RETRYABLE_STREAM_ERROR_MARKERS = (
     "incompleteread",
 )
 
-SPECIALIZED_SUBAGENT_DESCRIPTIONS = [
-    {
-        "name": INFORMATION_COLLECT_AGENT_NAME,
-        "description": (
-            "Use proactively for target information collection, reconnaissance "
-            "briefs, scope extraction, URL/host discovery, and collection plans "
-            "before deeper penetration-testing work."
-        ),
-    },
-    {
-        "name": WRITEUP_AGENT_NAME,
-        "description": (
-            "Use for writeups, reports, summaries, and final Markdown reporting "
-            "from prior conversation, tool output, evidence, and artifacts."
-        ),
-    },
-]
 SUBAGENT_DELEGATION_PROMPT = """## DeepAgent Subagent Delegation
 
 Specialized DeepAgent subagents are available through the `task` tool.
@@ -79,13 +52,8 @@ penetration-testing workflow.
 Available specialized subagents:
 {subagent_descriptions}
 
-Delegation rules:
-- For target information collection, reconnaissance briefs, scope extraction,
-  URL/host discovery, or collection planning, call `task` with
-  `information_collect_agent` and include the target, scope, and known context.
-- For writeups, reports, summaries, or final Markdown reporting, call `task`
-  with `writeup_agent` and include the relevant evidence, commands, findings,
-  and artifacts.
+Delegation guidance:
+{subagent_delegation_rules}
 - The calling agent only receives the subagent's final result. After a subagent
   returns, synthesize or present that result to the user as needed."""
 
@@ -171,12 +139,21 @@ class AgentRuntime:
     def build_main_agent_prompt(self, full_system_prompt: str) -> str:
         """Append project-specific subagent delegation rules for DeepAgent."""
 
+        subagent_classes = self.specialized_subagent_classes()
+        if not subagent_classes:
+            return full_system_prompt
+
         descriptions = "\n".join(
-            f"- `{item['name']}`: {item['description']}"
-            for item in SPECIALIZED_SUBAGENT_DESCRIPTIONS
+            f"- `{subagent_class.name}`: {subagent_class.description}"
+            for subagent_class in subagent_classes
+        )
+        delegation_rules = "\n".join(
+            f"- {_delegation_rule(subagent_class)}"
+            for subagent_class in subagent_classes
         )
         section = SUBAGENT_DELEGATION_PROMPT.format(
             subagent_descriptions=descriptions,
+            subagent_delegation_rules=delegation_rules,
         )
         if not full_system_prompt.strip():
             return section
@@ -360,40 +337,26 @@ class AgentRuntime:
     def build_subagents(self, skills_sources: list[str]) -> list[dict[str, Any]]:
         """Return inner DeepAgent task subagents exposed to the main agent."""
 
-        return [
+        subagents = [
             {
                 **GENERAL_PURPOSE_SUBAGENT,
                 "skills": skills_sources,
                 "middleware": [ToolCallIdMiddleware()],
-            },
-            {
-                "name": INFORMATION_COLLECT_AGENT_NAME,
-                "description": (
-                    "Use proactively for target information collection, "
-                    "reconnaissance briefs, scope extraction, URL/host "
-                    "discovery, and collection plans before deeper "
-                    "penetration-testing work."
-                ),
-                "system_prompt": INFORMATION_COLLECT_SYSTEM_PROMPT,
-                "model": self.build_llm(INFORMATION_COLLECT_AGENT_NAME),
-                "tools": [feroxbuster],
-                "skills": _agent_skill_sources(INFORMATION_COLLECT_SKILL_SOURCE_DIR),
-                "middleware": [ToolCallIdMiddleware()],
-            },
-            {
-                "name": WRITEUP_AGENT_NAME,
-                "description": (
-                    "Use for writeups, reports, summaries, and final Markdown "
-                    "reporting from prior conversation, tool output, evidence, "
-                    "and artifacts."
-                ),
-                "system_prompt": WRITEUP_SYSTEM_PROMPT,
-                "model": self.build_llm(WRITEUP_AGENT_NAME),
-                "tools": [],
-                "skills": _agent_skill_sources(WRITEUP_SKILL_SOURCE_DIR),
-                "middleware": [ToolCallIdMiddleware()],
-            },
+            }
         ]
+        subagents.extend(
+            subagent_class.to_deepagent_config(
+                build_llm=self.build_llm,
+                build_skill_sources=_agent_skill_sources,
+            )
+            for subagent_class in self.specialized_subagent_classes()
+        )
+        return subagents
+
+    def specialized_subagent_classes(self) -> tuple[type[SubAgent], ...]:
+        """Return automatically discovered specialized DeepAgent subagents."""
+
+        return load_subagent_classes()
 
     def build_llm(
         self,
@@ -460,16 +423,24 @@ class AgentRuntime:
             return self._agent_model_names[agent_name]
         return self.agent_config(agent_name).model
 
+    def agent_model_names(self) -> dict[str, str]:
+        """Return model names for the current session agent graph."""
+
+        if self._agent_model_names is not None:
+            return dict(self._agent_model_names)
+        return self.current_agent_model_names()
+
     def current_agent_model_names(self) -> dict[str, str]:
         """Return model names for the currently configured session agents."""
 
-        return {
-            INFORMATION_COLLECT_AGENT_NAME: self.agent_config(
-                INFORMATION_COLLECT_AGENT_NAME
-            ).model,
-            "main_agent": self.agent_config("main_agent").model,
-            WRITEUP_AGENT_NAME: self.agent_config(WRITEUP_AGENT_NAME).model,
-        }
+        model_names = {"main_agent": self.agent_config("main_agent").model}
+        model_names.update(
+            {
+                subagent_class.name: self.agent_config(subagent_class.name).model
+                for subagent_class in self.specialized_subagent_classes()
+            }
+        )
+        return model_names
 
     def selected_builtin_tools(self) -> list[Any]:
         """Return built-in tools enabled by the run payload."""
@@ -851,6 +822,17 @@ def _stringify_stream_value(value: Any) -> str:
     if content is not None and not isinstance(value, (dict, list)):
         return _stringify_stream_value(content)
     return _json_text(value)
+
+
+def _delegation_rule(subagent_class: type[SubAgent]) -> str:
+    return subagent_class.delegation_rule or _default_delegation_rule(subagent_class)
+
+
+def _default_delegation_rule(subagent_class: type[SubAgent]) -> str:
+    return (
+        f"Call `task` with `{subagent_class.name}` when its description fits "
+        "the current user request or workflow step."
+    )
 
 
 def _main_agent_skill_sources() -> list[str]:

@@ -4,6 +4,9 @@ from langchain_core.messages import AIMessage
 
 from server.agent.events.streaming import StreamCallbackHandler
 from server.agent.runtime.agent_runtime import AgentRuntime
+from server.agent.subagents import SubAgent, load_subagent_classes
+from server.agent.subagents.information_collect_agent import InformationCollectAgent
+from server.agent.subagents.writeup_agent import WriteupAgent
 from server.models.llm import LLMConfig
 from server.schemas.agent import AgentRunRequest
 
@@ -110,6 +113,18 @@ async def _drain_stream_events(queue):
         event = await queue.get()
         events.append((event.event, event.data))
     return events
+
+
+def test_deepagent_subagent_registry_autoloads_declared_classes():
+    subagent_classes = load_subagent_classes()
+    subagent_names = [subagent_class.name for subagent_class in subagent_classes]
+
+    assert "information_collect_agent" in subagent_names
+    assert "writeup_agent" in subagent_names
+    assert InformationCollectAgent in subagent_classes
+    assert WriteupAgent in subagent_classes
+    assert issubclass(InformationCollectAgent, SubAgent)
+    assert issubclass(WriteupAgent, SubAgent)
 
 
 def test_agent_runtime_registers_specialized_deepagent_subagents(monkeypatch):
