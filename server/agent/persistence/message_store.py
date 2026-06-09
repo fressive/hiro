@@ -14,21 +14,10 @@ from server.agent.utils.tool_call_ids import (
     is_valid_tool_call_id,
     normalize_ai_message_tool_call_ids,
 )
+from server.agent.utils.messages import extract_message_text
 from server.core.logger import logger
 from server.db import AsyncSessionLocal
 from server.models.agent import AgentMessage, AgentSession
-
-
-def extract_message_text(message: Any) -> str:
-    content = getattr(message, "content", None)
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return json.dumps(content)
-    content_blocks = getattr(message, "content_blocks", None)
-    if isinstance(content_blocks, list):
-        return json.dumps(content_blocks)
-    return ""
 
 
 class AgentMessageStore:

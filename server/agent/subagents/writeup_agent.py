@@ -1,6 +1,5 @@
 """Writeup generation helpers for session-scoped agent runs."""
 
-import json
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -9,14 +8,18 @@ from langchain_core.messages import (
     AIMessage,
     BaseMessage,
     HumanMessage,
-    ToolMessage,
 )
 
 from server.agent.runtime.context import SessionContext
 from server.agent.subagents.base import SubAgent
 from server.agent.utils.tool_call_ids import (
     ToolCallIdMiddleware,
-    normalize_model_messages,
+)
+from server.agent.utils.messages import (
+    extract_message_text,
+    format_message_for_context,
+    last_ai_message,
+    normalize_result_messages,
 )
 from server.core.util import get_data_path
 
@@ -126,13 +129,13 @@ class WriteupAgent(SubAgent):
             config=config,
             context=SessionContext(self.session_id),
         )
-        normalized_messages = _state_messages(result_state)
-        for message in reversed(normalized_messages):
-            if isinstance(message, AIMessage):
-                return message
+        normalized_messages = normalize_result_messages(result_state)
+        latest_ai_message = last_ai_message(normalized_messages)
+        if latest_ai_message is not None:
+            return latest_ai_message
         return AIMessage(
             content="\n\n".join(
-                _extract_message_text(message) for message in normalized_messages
+                extract_message_text(message) for message in normalized_messages
             )
         )
 
@@ -148,7 +151,7 @@ class WriteupAgent(SubAgent):
         rendered_messages = [
             rendered
             for message in messages
-            if (rendered := _format_message_for_writeup(message))
+            if (rendered := format_message_for_context(message))
         ]
         context = "\n\n".join(
             [
@@ -165,58 +168,3 @@ class WriteupAgent(SubAgent):
             "The oldest context was truncated to fit the writeup window.\n\n"
             + context[-MAX_WRITEUP_CONTEXT_CHARS:]
         )
-
-
-def _state_messages(result_state: Any) -> list[BaseMessage]:
-    if isinstance(result_state, dict):
-        result_messages = result_state.get("messages", [])
-    else:
-        result_messages = result_state
-    if not isinstance(result_messages, list):
-        result_messages = [result_messages]
-    return normalize_model_messages(result_messages)
-
-
-def _format_message_for_writeup(message: Any) -> str:
-    label = _message_role_label(message)
-    parts: list[str] = []
-    content = _extract_message_text(message)
-    if content:
-        parts.append(content)
-
-    tool_calls = getattr(message, "tool_calls", None)
-    if tool_calls:
-        parts.append(
-            "Tool calls: "
-            + json.dumps(tool_calls, ensure_ascii=True, default=str)
-        )
-
-    if not parts:
-        return ""
-    return f"### {label}\n" + "\n".join(parts)
-
-
-def _message_role_label(message: Any) -> str:
-    if isinstance(message, HumanMessage):
-        return "User"
-    if isinstance(message, AIMessage):
-        return "Assistant"
-    if isinstance(message, ToolMessage):
-        name = getattr(message, "name", None) or "tool"
-        return f"Tool: {name}"
-    message_type = getattr(message, "type", None)
-    if message_type:
-        return str(message_type).title()
-    return type(message).__name__
-
-
-def _extract_message_text(message: Any) -> str:
-    content = getattr(message, "content", None)
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return json.dumps(content)
-    content_blocks = getattr(message, "content_blocks", None)
-    if isinstance(content_blocks, list):
-        return json.dumps(content_blocks)
-    return ""
