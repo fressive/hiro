@@ -83,6 +83,12 @@ const isRenamingSelectedSession = ref(false)
 const selectedSessionTitleDraft = ref('')
 const selectedTitleInput = ref<HTMLInputElement | null>(null)
 const selectedSessionStorageKey = 'HIRO_SELECTED_AGENT_SESSION_ID'
+const agentGraphPanelWidthStorageKey = 'HIRO_AGENT_GRAPH_PANEL_WIDTH'
+const agentGraphPanelMinWidth = 224
+const agentGraphPanelMaxWidth = 520
+const agentGraphPanelDefaultWidth = 288
+const agentGraphPanelWidth = ref(agentGraphPanelDefaultWidth)
+const isResizingAgentGraphPanel = ref(false)
 let liveSnapshots: Record<string, {
   output: any[]
   toolEvents: EventRecord[]
@@ -97,6 +103,10 @@ let liveSnapshots: Record<string, {
 let socketSessionId: number | null = null
 let socketConnectPromise: Promise<void> | null = null
 let manualSocketClose = false
+let agentGraphResizeStartX = 0
+let agentGraphResizeStartWidth = agentGraphPanelDefaultWidth
+let restoreBodyCursor = ''
+let restoreBodyUserSelect = ''
 
 const innerTab = ref<'chat' | 'stats' | 'files'>('chat')
 const showSettings = ref(false)
@@ -142,6 +152,60 @@ const chartConfig = {
     label: 'Output Tokens',
     color: 'var(--vis-color-2)',
   },
+}
+
+const clampAgentGraphPanelWidth = (width: number) => (
+  Math.min(agentGraphPanelMaxWidth, Math.max(agentGraphPanelMinWidth, width))
+)
+
+const agentGraphPanelStyle = computed(() => ({
+  '--agent-graph-panel-width': `${agentGraphPanelWidth.value}px`,
+}))
+
+const persistAgentGraphPanelWidth = () => {
+  localStorage.setItem(agentGraphPanelWidthStorageKey, String(agentGraphPanelWidth.value))
+}
+
+const setAgentGraphPanelWidth = (width: number, shouldPersist = true) => {
+  agentGraphPanelWidth.value = clampAgentGraphPanelWidth(width)
+  if (shouldPersist) {
+    persistAgentGraphPanelWidth()
+  }
+}
+
+const resizeAgentGraphPanelBy = (delta: number) => {
+  setAgentGraphPanelWidth(agentGraphPanelWidth.value + delta)
+}
+
+const stopAgentGraphPanelResize = () => {
+  if (!isResizingAgentGraphPanel.value) return
+  isResizingAgentGraphPanel.value = false
+  document.body.style.cursor = restoreBodyCursor
+  document.body.style.userSelect = restoreBodyUserSelect
+  persistAgentGraphPanelWidth()
+  window.removeEventListener('pointermove', handleAgentGraphPanelResize)
+  window.removeEventListener('pointerup', stopAgentGraphPanelResize)
+  window.removeEventListener('pointercancel', stopAgentGraphPanelResize)
+}
+
+const handleAgentGraphPanelResize = (event: PointerEvent) => {
+  if (!isResizingAgentGraphPanel.value) return
+  setAgentGraphPanelWidth(agentGraphResizeStartWidth + event.clientX - agentGraphResizeStartX, false)
+}
+
+const startAgentGraphPanelResize = (event: PointerEvent) => {
+  if (event.button !== 0) return
+  event.preventDefault()
+  agentGraphResizeStartX = event.clientX
+  agentGraphResizeStartWidth = agentGraphPanelWidth.value
+  isResizingAgentGraphPanel.value = true
+  restoreBodyCursor = document.body.style.cursor
+  restoreBodyUserSelect = document.body.style.userSelect
+  document.body.style.cursor = 'col-resize'
+  document.body.style.userSelect = 'none'
+  window.addEventListener('pointermove', handleAgentGraphPanelResize)
+  window.addEventListener('pointerup', stopAgentGraphPanelResize)
+  window.addEventListener('pointercancel', stopAgentGraphPanelResize)
 }
 
 const fetchSessionStats = async () => {
@@ -1197,6 +1261,12 @@ const toggleMcpServer = (serverName: string) => {
 }
 
 onMounted(async () => {
+  const savedAgentGraphPanelWidthValue = localStorage.getItem(agentGraphPanelWidthStorageKey)
+  const savedAgentGraphPanelWidth = Number(savedAgentGraphPanelWidthValue)
+  if (savedAgentGraphPanelWidthValue && Number.isFinite(savedAgentGraphPanelWidth)) {
+    agentGraphPanelWidth.value = clampAgentGraphPanelWidth(savedAgentGraphPanelWidth)
+  }
+
   await fetchConfigs()
   await fetchTools()
   await fetchMcpServers()
@@ -1210,6 +1280,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  stopAgentGraphPanelResize()
   closeSessionSocket()
 })
 
@@ -1363,7 +1434,10 @@ watch(
             <div
               class="session-chat-layout flex h-full min-h-0 flex-col overflow-hidden xl:flex-row"
             >
-              <aside class="h-56 shrink-0 overflow-hidden border-b xl:h-full xl:w-72 xl:border-b-0 xl:border-r 2xl:w-80">
+              <aside
+                class="h-56 w-full shrink-0 overflow-hidden border-b xl:h-full xl:w-[var(--agent-graph-panel-width)] xl:border-b-0 xl:border-r"
+                :style="agentGraphPanelStyle"
+              >
                 <AgentCallGraph
                   :subagent-events="visibleSubagentEvents"
                   :tool-events="visibleToolEvents"
@@ -1371,6 +1445,28 @@ watch(
                   :is-running="isRunning"
                 />
               </aside>
+
+              <div
+                role="separator"
+                aria-label="Resize agent graph panel"
+                aria-orientation="vertical"
+                :aria-valuemin="agentGraphPanelMinWidth"
+                :aria-valuemax="agentGraphPanelMaxWidth"
+                :aria-valuenow="agentGraphPanelWidth"
+                tabindex="0"
+                :class="[
+                  'group hidden w-3 shrink-0 cursor-col-resize touch-none items-center justify-center outline-none xl:flex',
+                  isResizingAgentGraphPanel && 'bg-accent/50',
+                ]"
+                title="Resize agent graph panel"
+                @pointerdown="startAgentGraphPanelResize"
+                @keydown.left.prevent="resizeAgentGraphPanelBy(-24)"
+                @keydown.right.prevent="resizeAgentGraphPanelBy(24)"
+                @keydown.home.prevent="setAgentGraphPanelWidth(agentGraphPanelMinWidth)"
+                @keydown.end.prevent="setAgentGraphPanelWidth(agentGraphPanelMaxWidth)"
+              >
+                <span class="h-10 w-px rounded-full bg-border transition-colors group-hover:bg-foreground/35 group-focus-visible:bg-foreground/35" />
+              </div>
 
               <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
                 <div class="min-h-0 flex-1 overflow-hidden">
