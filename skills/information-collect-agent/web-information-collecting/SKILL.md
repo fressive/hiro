@@ -42,6 +42,9 @@ If a host is provided without a scheme, infer HTTP and HTTPS candidates and clea
 3. Perform low-noise baseline checks.
    - Fetch the root page and important known paths if HTTP request tooling is available.
    - Capture status codes, titles, headers, cookies, redirects, response size, and obvious framework/CMS/static-site signals.
+   - If the target is reachable, plan a fingerprinting pass before choosing
+     exploitation paths unless recent equivalent evidence already exists in
+     `INFO.md`.
    - Save only useful response bodies or command outputs as artifacts; avoid dumping large pages into context.
 
 4. Discover endpoints when needed.
@@ -50,12 +53,17 @@ If a host is provided without a scheme, infer HTTP and HTTPS candidates and clea
    - Add extensions only when evidence suggests a stack, such as `php`, `asp`, `aspx`, `jsp`, `txt`, `bak`, or `zip`.
    - Summarize notable paths, status codes, redirects, errors, and output locations in `INFO.md`.
 
-5. Fingerprint the application.
+5. Fingerprint the application before exploitation.
    - Use the `nuclei_fingerprint` tool for authorized HTTP/HTTPS targets when
      automatic technology detection or nuclei template evidence would clarify
      the stack.
+   - Pass relevant user-provided headers, cookies, or virtual-host context when
+     they are needed to reach the intended application surface.
    - Infer technologies from headers, HTML, script paths, static assets, cookies, routes, error pages, and response formats.
    - Prefer evidence over guesswork. If a product/version is uncertain, mark it as likely or unknown.
+   - Record `nuclei_fingerprint` in `INFO.md` Actions and summarize detected
+     technologies, template names, severities, target URL, and empty or
+     inconclusive results in Findings.
    - For source leaks, directory listings, backup files, debug pages, swagger/openapi docs, admin panels, upload forms, login flows, and API endpoints, record why each is interesting.
 
 6. Produce an attack-surface brief.
@@ -90,7 +98,7 @@ Stop collecting when one of these is true:
 - There is enough evidence to choose one or more concrete exploit paths.
 - The target appears static or unreachable and further collection would repeat prior work.
 - Tooling, authorization, credentials, DNS, or network access is missing.
-- Feroxbuster and baseline checks produce no new useful paths.
+- Fingerprinting, feroxbuster, and baseline checks produce no new useful paths or stack signals.
 
 When stopping, state what was confirmed, what remains unknown, and the best next step.
 
