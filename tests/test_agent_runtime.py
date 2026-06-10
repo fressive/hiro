@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 
 from langchain_core.messages import AIMessage
 
@@ -192,6 +193,18 @@ def test_agent_runtime_registers_specialized_deepagent_subagents(monkeypatch):
     assert "general-purpose" in subagents
     assert "writeup_agent" in subagents
     assert "information_collect_agent" in subagents
+    assert captured["skills"] == [
+        (Path("skills") / "exploit-agent").resolve().as_posix(),
+    ]
+    assert subagents["general-purpose"]["skills"] == captured["skills"]
+    assert subagents["information_collect_agent"]["skills"] == [
+        (Path("skills") / "information-collect-agent").resolve().as_posix(),
+    ]
+    assert subagents["writeup_agent"]["skills"] == [
+        (Path("skills") / "writeup-agent").resolve().as_posix(),
+    ]
+    assert "/skills/" not in captured["backend"].routes
+    assert f"{Path('skills').resolve().as_posix()}/" in captured["backend"].routes
     assert subagents["information_collect_agent"]["model"] == (
         "model:information_collect_agent"
     )

@@ -11,8 +11,8 @@ from server.agent.runtime.context import SessionContext
 from server.core.util import get_data_path, run_command
 
 
-MAX_TIMEOUT_SECONDS = 600
-DEFAULT_TIMEOUT_SECONDS = 120
+MAX_TIMEOUT_SECONDS = 3600
+DEFAULT_TIMEOUT_SECONDS = 1800
 MAX_OUTPUT_CHARS = 20000
 DEFAULT_THREADS = 10
 DEFAULT_DEPTH = 2

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from deepagents import create_deep_agent
+from deepagents.backends import CompositeBackend, StateBackend
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
@@ -12,7 +13,7 @@ from langchain_core.messages import (
 )
 
 from server.agent.runtime.context import SessionContext
-from server.agent.subagents.base import SubAgent
+from server.agent.subagents.base import SubAgent, skill_backend_routes
 from server.agent.tools.feroxbuster import feroxbuster
 from server.agent.tools.nuclei import nuclei_fingerprint
 from server.agent.utils.tool_call_ids import (
@@ -174,6 +175,10 @@ class InformationCollectAgent(SubAgent):
         collection_context = self.build_context(history_messages=history_messages)
         config = {"callbacks": [self.callback]} if self.callback is not None else None
         skill_sources = self.local_skill_sources(self.skill_sources)
+        backend = CompositeBackend(
+            default=StateBackend(),
+            routes=skill_backend_routes(skill_sources),
+        )
         messages: list[BaseMessage] = [
             HumanMessage(content=collection_context),
         ]
@@ -185,7 +190,7 @@ class InformationCollectAgent(SubAgent):
             context_schema=SessionContext,
             name=INFORMATION_COLLECT_AGENT_NAME,
             skills=skill_sources or None,
-            backend=self.local_skills_backend(skill_sources),
+            backend=backend,
         )
 
         result_state = await agent.ainvoke(

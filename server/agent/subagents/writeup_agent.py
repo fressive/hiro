@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from deepagents import create_deep_agent
+from deepagents.backends import CompositeBackend, StateBackend
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
@@ -11,7 +12,7 @@ from langchain_core.messages import (
 )
 
 from server.agent.runtime.context import SessionContext
-from server.agent.subagents.base import SubAgent
+from server.agent.subagents.base import SubAgent, skill_backend_routes
 from server.agent.utils.tool_call_ids import (
     ToolCallIdMiddleware,
 )
@@ -85,6 +86,10 @@ class WriteupAgent(SubAgent):
         )
         config = {"callbacks": [self.callback]} if self.callback is not None else None
         skill_sources = self.local_skill_sources(self.skill_sources)
+        backend = CompositeBackend(
+            default=StateBackend(),
+            routes=skill_backend_routes(skill_sources),
+        )
         agent = create_deep_agent(
             model=self._build_llm(),
             tools=[],
@@ -93,7 +98,7 @@ class WriteupAgent(SubAgent):
             context_schema=SessionContext,
             name=WRITEUP_AGENT_NAME,
             skills=skill_sources or None,
-            backend=self.local_skills_backend(skill_sources),
+            backend=backend,
         )
         result_state = await agent.ainvoke(
             {"messages": [HumanMessage(content=report_context)]},

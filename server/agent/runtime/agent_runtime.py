@@ -17,7 +17,11 @@ from server.agent.events.streaming import StreamCallbackHandler
 from server.agent.runtime.context import SessionContext
 from server.agent.runtime.mcp_loader import create_dynamic_mcp_router_tools
 from server.agent.runtime.sandboxed_backend import SessionSandboxedBackend
-from server.agent.subagents import SubAgent, load_subagent_classes
+from server.agent.subagents import (
+    SubAgent,
+    load_subagent_classes,
+    skill_backend_routes,
+)
 from server.agent.tools import agent_tools
 from server.agent.utils.tool_call_ids import ToolCallIdMiddleware
 from server.core.logger import logger
@@ -27,7 +31,6 @@ from server.schemas.agent import AgentRunRequest
 
 SYSTEM_PROMPT = """"""
 SKILLS_ROOT = Path("./skills")
-DEEPAGENT_SKILLS_ROUTE = "/skills"
 MAIN_AGENT_SKILL_SOURCE_DIRS = ("main-agent", "exploit-agent")
 MAX_STREAMING_ATTEMPTS = 2
 STREAM_RETRY_BACKOFF_SECONDS = 0.5
@@ -308,7 +311,7 @@ class AgentRuntime:
     def _create_main_agent(self, *, streaming: bool, main_system_prompt: str) -> Any:
         """Create the DeepAgent runnable for this session."""
 
-        skills_sources = _main_agent_skill_sources()
+        skill_sources = _main_agent_skills()
         self._agent_model_names = self.current_agent_model_names()
         llm = self.build_llm("main_agent", streaming=streaming)
         return create_deep_agent(
@@ -316,10 +319,10 @@ class AgentRuntime:
             tools=self.selected_builtin_tools() + self.mcp_router_tools(),
             context_schema=SessionContext,
             backend=self.build_backend(),
-            skills=skills_sources,
+            skills=skill_sources,
             system_prompt=main_system_prompt,
             middleware=[ToolCallIdMiddleware()],
-            subagents=self.build_subagents(skills_sources),
+            subagents=self.build_subagents(skill_sources),
         )
 
     def build_input_content(self, run_context_prompt: str) -> str:
@@ -334,20 +337,19 @@ class AgentRuntime:
             f"{self.input_text}"
         )
 
-    def build_subagents(self, skills_sources: list[str]) -> list[dict[str, Any]]:
+    def build_subagents(self, skill_sources: list[str]) -> list[dict[str, Any]]:
         """Return inner DeepAgent task subagents exposed to the main agent."""
 
         subagents = [
             {
                 **GENERAL_PURPOSE_SUBAGENT,
-                "skills": skills_sources,
+                "skills": skill_sources,
                 "middleware": [ToolCallIdMiddleware()],
             }
         ]
         subagents.extend(
             subagent_class.to_deepagent_config(
                 build_llm=self.build_llm,
-                build_skill_sources=_agent_skill_sources,
             )
             for subagent_class in self.specialized_subagent_classes()
         )
@@ -469,13 +471,8 @@ class AgentRuntime:
                 max_file_size_mb=1000,
             )
         }
-        skills_root = Path(SKILLS_ROOT)
-        if skills_root.is_dir():
-            routes[f"{DEEPAGENT_SKILLS_ROUTE}/"] = FilesystemBackend(
-                skills_root,
-                virtual_mode=True,
-                max_file_size_mb=10,
-            )
+        if SKILLS_ROOT.is_dir():
+            routes.update(skill_backend_routes([SKILLS_ROOT.resolve().as_posix()]))
 
         # Expose the host path for components outside bwrap, such as MCP servers.
         return CompositeBackend(
@@ -835,27 +832,20 @@ def _default_delegation_rule(subagent_class: type[SubAgent]) -> str:
     )
 
 
-def _main_agent_skill_sources() -> list[str]:
-    """Return DeepAgent skill sources for the current skills layout."""
+def _main_agent_skills() -> list[str]:
+    """Return local DeepAgent skill source folders for the main agent."""
 
     if not SKILLS_ROOT.is_dir():
         return []
 
     sources = [
-        f"{DEEPAGENT_SKILLS_ROUTE}/{source_name}"
+        (SKILLS_ROOT / source_name).resolve().as_posix()
         for source_name in MAIN_AGENT_SKILL_SOURCE_DIRS
         if _has_skill_dirs(SKILLS_ROOT / source_name)
     ]
     if _has_skill_dirs(SKILLS_ROOT):
-        sources.append(DEEPAGENT_SKILLS_ROUTE)
+        sources.append(SKILLS_ROOT.resolve().as_posix())
     return sources
-
-
-def _agent_skill_sources(source_name: str) -> list[str]:
-    source = SKILLS_ROOT / source_name
-    if not _has_skill_dirs(source):
-        return []
-    return [f"{DEEPAGENT_SKILLS_ROUTE}/{source_name}"]
 
 
 def _has_skill_dirs(source: Path) -> bool:

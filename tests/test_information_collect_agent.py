@@ -12,7 +12,10 @@ from server.agent.subagents.information_collect_agent import (
     extract_target_urls,
     should_collect_information,
 )
-from server.agent.tools.feroxbuster import run_feroxbuster_scan
+from server.agent.tools.feroxbuster import (
+    DEFAULT_TIMEOUT_SECONDS as FEROXBUSTER_DEFAULT_TIMEOUT_SECONDS,
+    run_feroxbuster_scan,
+)
 from server.agent.tools.nuclei import run_nuclei_fingerprint_scan
 
 
@@ -157,7 +160,7 @@ def test_information_collect_agent_uses_feroxbuster_tool(monkeypatch):
             "extensions": None,
             "depth": 2,
             "threads": 10,
-            "timeout_seconds": 120,
+            "timeout_seconds": FEROXBUSTER_DEFAULT_TIMEOUT_SECONDS,
             "follow_redirects": True,
             "insecure": True,
         }
