@@ -4,11 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar
 
-from deepagents.backends import FilesystemBackend
-
 from server.agent.utils.tool_call_ids import ToolCallIdMiddleware
-
-LOCAL_SKILLS_ROOT = Path("./skills")
 
 
 class SubAgent:
@@ -47,6 +43,11 @@ class SubAgent:
             "system_prompt": cls.system_prompt,
             "model": build_llm(cls.name),
             "tools": cls.tools(),
-            "skills": [f"./skills/{cls.skill_source_dir}"],
+            "skills": [
+                (Path("./skills") / cls.skill_source_dir).resolve().as_posix()
+            ]
+            if cls.skill_source_dir
+            and (Path("./skills") / cls.skill_source_dir).is_dir()
+            else [],
             "middleware": cls.middleware(),
         }

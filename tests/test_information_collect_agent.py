@@ -13,6 +13,7 @@ from server.agent.subagents.information_collect_agent import (
     should_collect_information,
 )
 from server.agent.tools.feroxbuster import (
+    COMMAND_TIMEOUT_GRACE_SECONDS,
     DEFAULT_TIMEOUT_SECONDS as FEROXBUSTER_DEFAULT_TIMEOUT_SECONDS,
     run_feroxbuster_scan,
 )
@@ -163,6 +164,8 @@ def test_information_collect_agent_uses_feroxbuster_tool(monkeypatch):
             "timeout_seconds": FEROXBUSTER_DEFAULT_TIMEOUT_SECONDS,
             "follow_redirects": True,
             "insecure": True,
+            "checkpoint_enabled": True,
+            "resume_from_checkpoint": None,
         }
     ]
 
@@ -294,20 +297,103 @@ def test_run_feroxbuster_scan_builds_sandboxed_command(monkeypatch, tmp_path):
                 "feroxbuster",
                 "-u",
                 "https://target.test",
-                "--no-state",
                 "--silent",
                 "--depth",
                 "3",
                 "--threads",
                 "8",
+                "--time-limit",
+                "30s",
                 "--redirects",
                 "--insecure",
                 "--extensions",
                 "php,txt",
             ],
             "session_id": 123,
-            "timeout": 30,
+            "timeout": 30 + COMMAND_TIMEOUT_GRACE_SECONDS,
             "cwd": tmp_path / "123",
+        }
+    ]
+
+
+def test_run_feroxbuster_scan_collects_checkpoint(monkeypatch, tmp_path):
+    session_path = tmp_path / "123"
+    session_path.mkdir()
+
+    def fake_run_command(command, session_id, timeout=None, cwd=None):
+        (session_path / "ferox-test.state").write_text("state", encoding="utf-8")
+        return "Command timed out after 30 seconds"
+
+    monkeypatch.setattr(
+        "server.agent.tools.feroxbuster.get_data_path",
+        lambda session_id: session_path,
+    )
+    monkeypatch.setattr(
+        "server.agent.tools.feroxbuster.run_command",
+        fake_run_command,
+    )
+
+    result = run_feroxbuster_scan(
+        session_id=123,
+        target_url="https://target.test",
+        timeout_seconds=30,
+    )
+
+    checkpoint_path = (
+        session_path / "data" / "feroxbuster-checkpoints" / "ferox-test.state"
+    )
+    assert checkpoint_path.read_text(encoding="utf-8") == "state"
+    assert "Checkpoint files:" in result
+    assert "data/feroxbuster-checkpoints/ferox-test.state" in result
+    assert "resume_from_checkpoint" in result
+
+
+def test_run_feroxbuster_scan_resumes_from_checkpoint(monkeypatch, tmp_path):
+    calls = []
+    session_path = tmp_path / "123"
+    session_path.mkdir()
+
+    def fake_run_command(command, session_id, timeout=None, cwd=None):
+        calls.append(
+            {
+                "command": command,
+                "session_id": session_id,
+                "timeout": timeout,
+                "cwd": cwd,
+            }
+        )
+        return "200 /admin"
+
+    monkeypatch.setattr(
+        "server.agent.tools.feroxbuster.get_data_path",
+        lambda session_id: session_path,
+    )
+    monkeypatch.setattr(
+        "server.agent.tools.feroxbuster.run_command",
+        fake_run_command,
+    )
+
+    result = run_feroxbuster_scan(
+        session_id=123,
+        target_url="https://target.test",
+        resume_from_checkpoint="data/feroxbuster-checkpoints/ferox-test.state",
+        timeout_seconds=60,
+    )
+
+    assert result == "200 /admin"
+    assert calls == [
+        {
+            "command": [
+                "feroxbuster",
+                "--resume-from",
+                "data/feroxbuster-checkpoints/ferox-test.state",
+                "--silent",
+                "--time-limit",
+                "60s",
+            ],
+            "session_id": 123,
+            "timeout": 60 + COMMAND_TIMEOUT_GRACE_SECONDS,
+            "cwd": session_path,
         }
     ]
 

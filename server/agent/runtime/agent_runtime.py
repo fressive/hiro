@@ -20,7 +20,6 @@ from server.agent.runtime.sandboxed_backend import SessionSandboxedBackend
 from server.agent.subagents import (
     SubAgent,
     load_subagent_classes,
-    skill_backend_routes,
 )
 from server.agent.tools import agent_tools
 from server.agent.utils.tool_call_ids import ToolCallIdMiddleware
@@ -472,7 +471,12 @@ class AgentRuntime:
             )
         }
         if SKILLS_ROOT.is_dir():
-            routes.update(skill_backend_routes([SKILLS_ROOT.resolve().as_posix()]))
+            skills_root = SKILLS_ROOT.resolve()
+            routes[f"{skills_root.as_posix().rstrip('/')}/"] = FilesystemBackend(
+                skills_root,
+                virtual_mode=True,
+                max_file_size_mb=10,
+            )
 
         # Expose the host path for components outside bwrap, such as MCP servers.
         return CompositeBackend(

@@ -49,9 +49,11 @@ If a host is provided without a scheme, infer HTTP and HTTPS candidates and clea
 
 4. Discover endpoints when needed.
    - Use the `feroxbuster` tool for authorized HTTP/HTTPS targets when known paths are insufficient.
-   - Start with conservative defaults: shallow depth, modest threads, redirects enabled, and a short timeout.
+   - Start with conservative defaults: shallow depth, modest threads, redirects enabled, checkpointing enabled, and a bounded timeout.
+   - If feroxbuster times out or reports an incomplete scan, do not restart from scratch when a checkpoint is available. Re-run `feroxbuster` with `resume_from_checkpoint` set to the returned checkpoint path and double the previous `timeout_seconds`.
+   - Continue doubling `timeout_seconds` only while the scan is still useful and in scope; stop at the tool maximum or when further discovery would be repetitive.
    - Add extensions only when evidence suggests a stack, such as `php`, `asp`, `aspx`, `jsp`, `txt`, `bak`, or `zip`.
-   - Summarize notable paths, status codes, redirects, errors, and output locations in `INFO.md`.
+   - Summarize notable paths, status codes, redirects, errors, checkpoint paths, timeout values, resume attempts, and output locations in `INFO.md`.
 
 5. Fingerprint the application before exploitation.
    - Use the `nuclei_fingerprint` tool for authorized HTTP/HTTPS targets when

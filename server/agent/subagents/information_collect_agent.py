@@ -2,10 +2,11 @@
 
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
 
 from deepagents import create_deep_agent
-from deepagents.backends import CompositeBackend, StateBackend
+from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
@@ -13,7 +14,7 @@ from langchain_core.messages import (
 )
 
 from server.agent.runtime.context import SessionContext
-from server.agent.subagents.base import SubAgent, skill_backend_routes
+from server.agent.subagents.base import SubAgent
 from server.agent.tools.feroxbuster import feroxbuster
 from server.agent.tools.nuclei import nuclei_fingerprint
 from server.agent.utils.tool_call_ids import (
@@ -72,7 +73,10 @@ Rules:
 - Treat nuclei_fingerprint output as evidence and include detected
   technologies, template matches, severities, and uncertain or empty results.
 - Treat feroxbuster output as evidence and include notable discovered paths,
-  status codes, redirects, and errors.
+  status codes, redirects, errors, checkpoint paths, timeout values, and
+  resume attempts. If feroxbuster times out and returns a checkpoint, resume
+  from that checkpoint with double the previous timeout_seconds when more
+  endpoint discovery is still useful.
 - Return only Markdown, with no preamble."""
 INFORMATION_COLLECT_AGENT_NAME = "information_collect_agent"
 
@@ -174,10 +178,24 @@ class InformationCollectAgent(SubAgent):
     ) -> AIMessage:
         collection_context = self.build_context(history_messages=history_messages)
         config = {"callbacks": [self.callback]} if self.callback is not None else None
-        skill_sources = self.local_skill_sources(self.skill_sources)
+        skill_sources = (
+            [Path(source).resolve().as_posix() for source in self.skill_sources]
+            if self.skill_sources is not None
+            else [
+                (Path("./skills") / self.skill_source_dir).resolve().as_posix()
+            ]
+        )
         backend = CompositeBackend(
             default=StateBackend(),
-            routes=skill_backend_routes(skill_sources),
+            routes={
+                f"{source_path.as_posix().rstrip('/')}/": FilesystemBackend(
+                    source_path,
+                    virtual_mode=True,
+                    max_file_size_mb=10,
+                )
+                for source in skill_sources
+                if (source_path := Path(source).resolve()).is_dir()
+            },
         )
         messages: list[BaseMessage] = [
             HumanMessage(content=collection_context),

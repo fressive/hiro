@@ -1,10 +1,11 @@
 """Writeup generation helpers for session-scoped agent runs."""
 
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
 
 from deepagents import create_deep_agent
-from deepagents.backends import CompositeBackend, StateBackend
+from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
@@ -12,7 +13,7 @@ from langchain_core.messages import (
 )
 
 from server.agent.runtime.context import SessionContext
-from server.agent.subagents.base import SubAgent, skill_backend_routes
+from server.agent.subagents.base import SubAgent
 from server.agent.utils.tool_call_ids import (
     ToolCallIdMiddleware,
 )
@@ -85,10 +86,24 @@ class WriteupAgent(SubAgent):
             history_messages=history_messages,
         )
         config = {"callbacks": [self.callback]} if self.callback is not None else None
-        skill_sources = self.local_skill_sources(self.skill_sources)
+        skill_sources = (
+            [Path(source).resolve().as_posix() for source in self.skill_sources]
+            if self.skill_sources is not None
+            else [
+                (Path("./skills") / self.skill_source_dir).resolve().as_posix()
+            ]
+        )
         backend = CompositeBackend(
             default=StateBackend(),
-            routes=skill_backend_routes(skill_sources),
+            routes={
+                f"{source_path.as_posix().rstrip('/')}/": FilesystemBackend(
+                    source_path,
+                    virtual_mode=True,
+                    max_file_size_mb=10,
+                )
+                for source in skill_sources
+                if (source_path := Path(source).resolve()).is_dir()
+            },
         )
         agent = create_deep_agent(
             model=self._build_llm(),
