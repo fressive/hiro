@@ -195,7 +195,10 @@ def test_agent_runtime_registers_specialized_deepagent_subagents(monkeypatch):
     assert subagents["information_collect_agent"]["model"] == (
         "model:information_collect_agent"
     )
-    assert subagents["information_collect_agent"]["tools"][0].name == "feroxbuster"
+    assert [tool.name for tool in subagents["information_collect_agent"]["tools"]] == [
+        "feroxbuster",
+        "nuclei_fingerprint",
+    ]
     assert subagents["writeup_agent"]["model"] == "model:writeup_agent"
     assert subagents["writeup_agent"]["tools"] == []
     assert build_llm_calls == [

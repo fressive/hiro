@@ -52,6 +52,7 @@ The screenshots below show the current desktop Web UI. Hiro is changing quickly,
   - `wget`
   - `bwrap` from the `bubblewrap` package
   - `feroxbuster`
+  - `nuclei`
 
 ## Quick Start
 
@@ -86,7 +87,7 @@ When Hiro is not installed, the web UI redirects to `/install`.
    sqlite:///./hiro.db
    ```
 
-2. Run the environment check. The installer verifies `wget`, `curl`, `bwrap`, and `feroxbuster`.
+2. Run the environment check. The installer verifies `wget`, `curl`, `bwrap`, `feroxbuster`, and `nuclei`.
 3. Create the admin account.
 4. Hiro writes installation settings to `.env`, creates database tables, and restarts the backend process.
 5. Sign in at `/login` with the admin username and password you created.

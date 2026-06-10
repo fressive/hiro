@@ -14,6 +14,7 @@ from langchain_core.messages import (
 from server.agent.runtime.context import SessionContext
 from server.agent.subagents.base import SubAgent
 from server.agent.tools.feroxbuster import feroxbuster
+from server.agent.tools.nuclei import nuclei_fingerprint
 from server.agent.utils.tool_call_ids import (
     ToolCallIdMiddleware,
 )
@@ -56,6 +57,8 @@ Responsibilities:
 - Summarize relevant evidence already present in prior conversation or INFO.md.
 - Propose concrete next collection steps, tools, and artifacts to update.
 - Call out missing prerequisites or ambiguity that would affect collection.
+- Use nuclei_fingerprint when authorized target URLs need technology
+  fingerprinting or nuclei automatic-scan evidence.
 - Use feroxbuster when authorized target URLs need web path discovery.
 - Append concise useful collection notes and tool results to INFO.md in the
   working directory.
@@ -65,6 +68,8 @@ Rules:
   that evidence is present in the provided context.
 - Keep findings clearly separated from next-step recommendations.
 - Prefer actionable bullets over generic methodology.
+- Treat nuclei_fingerprint output as evidence and include detected
+  technologies, template matches, severities, and uncertain or empty results.
 - Treat feroxbuster output as evidence and include notable discovered paths,
   status codes, redirects, and errors.
 - Return only Markdown, with no preamble."""
@@ -143,7 +148,7 @@ class InformationCollectAgent(SubAgent):
 
     @classmethod
     def tools(cls) -> list[Any]:
-        return [feroxbuster]
+        return [feroxbuster, nuclei_fingerprint]
 
     def __init__(
         self,
@@ -158,7 +163,7 @@ class InformationCollectAgent(SubAgent):
         self.input_text = input_text
         self._build_llm = build_llm
         self.callback = callback
-        self.tools = [feroxbuster]
+        self.tools = [feroxbuster, nuclei_fingerprint]
         self.skill_sources = skills
 
     async def generate(

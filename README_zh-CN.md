@@ -52,6 +52,7 @@ Hiro 是一个 AI 辅助的渗透测试和 CTF 工作流平台。它结合了 Fa
   - `wget`
   - `bwrap`，来自 `bubblewrap` 包
   - `feroxbuster`
+  - `nuclei`
 
 ## 快速开始
 
@@ -86,7 +87,7 @@ npm run dev
    sqlite:///./hiro.db
    ```
 
-2. 运行环境检查。安装器会验证 `wget`、`curl`、`bwrap` 和 `feroxbuster`。
+2. 运行环境检查。安装器会验证 `wget`、`curl`、`bwrap`、`feroxbuster` 和 `nuclei`。
 3. 创建管理员账号。
 4. Hiro 会将安装配置写入 `.env`，创建数据库表，并重启后端进程。
 5. 使用刚创建的管理员用户名和密码在 `/login` 登录。

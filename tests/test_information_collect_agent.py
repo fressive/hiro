@@ -13,6 +13,7 @@ from server.agent.subagents.information_collect_agent import (
     should_collect_information,
 )
 from server.agent.tools.feroxbuster import run_feroxbuster_scan
+from server.agent.tools.nuclei import run_nuclei_fingerprint_scan
 
 
 class FakeToolCallingChatModel(BaseChatModel):
@@ -163,6 +164,62 @@ def test_information_collect_agent_uses_feroxbuster_tool(monkeypatch):
     ]
 
 
+def test_information_collect_agent_uses_nuclei_fingerprint_tool(monkeypatch):
+    fake_llm = FakeToolCallingChatModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "nuclei_fingerprint",
+                        "args": {"target_url": "https://target.test"},
+                        "id": "call-nuclei",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="## Findings\n- Nuclei detected nginx"),
+        ]
+    )
+    scan_calls = []
+
+    def fake_scan(**kwargs):
+        scan_calls.append(kwargs)
+        return "[tech-detect:nginx] [http] [info] https://target.test"
+
+    monkeypatch.setattr(
+        "server.agent.tools.nuclei.run_nuclei_fingerprint_scan",
+        fake_scan,
+    )
+
+    agent = InformationCollectAgent(
+        session_id=123,
+        input_text="fingerprint https://target.test",
+        build_llm=lambda: fake_llm,
+    )
+
+    result = asyncio.run(agent.generate(history_messages=[]))
+
+    assert result.content == "## Findings\n- Nuclei detected nginx"
+    assert any(tool.name == "nuclei_fingerprint" for tool in fake_llm.bound_tools)
+    assert any(
+        isinstance(message, ToolMessage)
+        and message.name == "nuclei_fingerprint"
+        and "[tech-detect:nginx]" in message.content
+        for message in fake_llm.calls[-1]
+    )
+    assert scan_calls == [
+        {
+            "session_id": 123,
+            "target_url": "https://target.test",
+            "headers": None,
+            "rate_limit": 10,
+            "retries": 1,
+            "timeout_seconds": 180,
+        }
+    ]
+
+
 def test_information_collect_agent_passes_skill_sources_to_deepagent(tmp_path):
     skills_root = tmp_path / "information-collect-agent"
     skill_dir = skills_root / "web-information-collecting"
@@ -247,6 +304,63 @@ def test_run_feroxbuster_scan_builds_sandboxed_command(monkeypatch, tmp_path):
             ],
             "session_id": 123,
             "timeout": 30,
+            "cwd": tmp_path / "123",
+        }
+    ]
+
+
+def test_run_nuclei_fingerprint_scan_builds_sandboxed_command(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run_command(command, session_id, timeout=None, cwd=None):
+        calls.append(
+            {
+                "command": command,
+                "session_id": session_id,
+                "timeout": timeout,
+                "cwd": cwd,
+            }
+        )
+        return "[tech-detect:nginx] [http] [info] https://target.test"
+
+    monkeypatch.setattr(
+        "server.agent.tools.nuclei.get_data_path",
+        lambda session_id: tmp_path / str(session_id),
+    )
+    monkeypatch.setattr(
+        "server.agent.tools.nuclei.run_command",
+        fake_run_command,
+    )
+
+    result = run_nuclei_fingerprint_scan(
+        session_id=123,
+        target_url="https://target.test",
+        headers={"Cookie": "sid=abc"},
+        rate_limit=20,
+        retries=2,
+        timeout_seconds=45,
+    )
+
+    assert result == "[tech-detect:nginx] [http] [info] https://target.test"
+    assert calls == [
+        {
+            "command": [
+                "nuclei",
+                "-u",
+                "https://target.test",
+                "-as",
+                "-silent",
+                "-nc",
+                "-duc",
+                "-rl",
+                "20",
+                "-retries",
+                "2",
+                "-H",
+                "Cookie: sid=abc",
+            ],
+            "session_id": 123,
+            "timeout": 45,
             "cwd": tmp_path / "123",
         }
     ]

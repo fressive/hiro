@@ -56,7 +56,8 @@ async def check_system_requirements():
         "wget": ["--version"], 
         "curl": ["--version"],
         "bwrap": ["--version"],
-        "feroxbuster": ["--version"]
+        "feroxbuster": ["--version"],
+        "nuclei": ["-version"],
     }
     items = []
     overall_success = True
