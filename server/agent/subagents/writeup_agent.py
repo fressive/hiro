@@ -23,18 +23,8 @@ from server.agent.utils.messages import (
 )
 from server.core.util import get_data_path
 
-
 MAX_WRITEUP_CONTEXT_CHARS = 60000
-WRITEUP_INTENT_KEYWORDS = (
-    "writeup",
-    "write up",
-    "report",
-    "pentest report",
-    "summary",
-    "总结",
-    "报告",
-    "复盘",
-)
+
 WRITEUP_SYSTEM_PROMPT = """You are a writeup subagent.
 
 Generate a concise Markdown penetration-test report from the prior steps,
@@ -50,25 +40,6 @@ Requirements:
 - Save the final report to WRITEUP.md in the working directory.
 - Return only the report Markdown, with no preamble."""
 WRITEUP_AGENT_NAME = "writeup_agent"
-
-
-def should_generate_writeup(input_text: str) -> bool:
-    normalized = input_text.lower()
-    return any(keyword in normalized for keyword in WRITEUP_INTENT_KEYWORDS)
-
-
-def looks_like_writeup(content: str | None) -> bool:
-    if not content:
-        return False
-    normalized = content.lower()
-    return "# report" in normalized or "# writeup" in normalized or "## findings" in normalized
-
-
-def save_writeup_artifact(session_id: int, report_markdown: str) -> None:
-    data_path = get_data_path(session_id) / "data"
-    data_path.mkdir(parents=True, exist_ok=True)
-    (data_path / "WRITEUP.md").write_text(report_markdown, encoding="utf-8")
-
 
 class WriteupAgent(SubAgent):
     """Generate a Markdown report from a completed agent run."""

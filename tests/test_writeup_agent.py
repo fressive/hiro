@@ -6,13 +6,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMe
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field
 
-from server.agent.subagents.writeup_agent import (
-    WriteupAgent,
-    looks_like_writeup,
-    save_writeup_artifact,
-    should_generate_writeup,
-)
-
+from server.agent.subagents.writeup_agent import WriteupAgent
 
 class FakeChatModel(BaseChatModel):
     response: BaseMessage
@@ -45,18 +39,6 @@ def _message_text(message: BaseMessage) -> str:
             for block in content
         )
     return str(content)
-
-
-def test_should_generate_writeup_matches_report_intent():
-    assert should_generate_writeup("please generate a pentest report")
-    assert should_generate_writeup("请生成报告")
-    assert not should_generate_writeup("continue scanning")
-
-
-def test_looks_like_writeup_detects_report_markdown():
-    assert looks_like_writeup("# Report\n\nSummary")
-    assert looks_like_writeup("## Findings\n\n- Issue")
-    assert not looks_like_writeup("plain assistant response")
 
 
 def test_writeup_agent_builds_context_from_run_messages():
@@ -129,16 +111,3 @@ def test_writeup_agent_passes_skill_sources_to_deepagent(tmp_path):
     assert "writeup" in system_prompt
     assert "Generate evidence-based reports." in system_prompt
     assert f"{skill_dir.as_posix()}/SKILL.md" in system_prompt
-
-
-def test_save_writeup_artifact_writes_writeup_file(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "server.agent.subagents.writeup_agent.get_data_path",
-        lambda _: tmp_path,
-    )
-
-    save_writeup_artifact(123, "# Report\n\nDone")
-
-    assert (tmp_path / "data" / "WRITEUP.md").read_text(encoding="utf-8") == (
-        "# Report\n\nDone"
-    )
