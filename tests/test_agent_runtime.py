@@ -4,7 +4,11 @@ from pathlib import Path
 from langchain_core.messages import AIMessage
 
 from server.agent.events.streaming import StreamCallbackHandler
-from server.agent.runtime.agent_runtime import AgentRuntime
+from server.agent.runtime.agent_runtime import (
+    AgentRuntime,
+    _main_agent_skills,
+    is_retryable_stream_error,
+)
 from server.agent.subagents import SubAgent, load_subagent_classes
 from server.agent.subagents.information_collect_agent import InformationCollectAgent
 from server.agent.subagents.writeup_agent import WriteupAgent
@@ -156,7 +160,15 @@ def test_agent_runtime_registers_specialized_deepagent_subagents(monkeypatch):
         captured.update(kwargs)
         return FakeDeepAgent()
 
-    payload = AgentRunRequest(config_id=1, input="generate a writeup")
+    payload = AgentRunRequest(
+        config_id=1,
+        input="generate a writeup",
+        mcp_servers=["main-mcp"],
+        agent_mcp_servers={
+            "information_collect_agent": ["info-mcp"],
+            "writeup_agent": ["writeup-mcp"],
+        },
+    )
     runtime = AgentRuntime(
         session_id=123,
         input_text=payload.input,
@@ -193,9 +205,7 @@ def test_agent_runtime_registers_specialized_deepagent_subagents(monkeypatch):
     assert "general-purpose" in subagents
     assert "writeup_agent" in subagents
     assert "information_collect_agent" in subagents
-    assert captured["skills"] == [
-        (Path("skills") / "exploit-agent").resolve().as_posix(),
-    ]
+    assert captured["skills"] == _main_agent_skills()
     assert subagents["general-purpose"]["skills"] == captured["skills"]
     assert subagents["information_collect_agent"]["skills"] == [
         (Path("skills") / "information-collect-agent").resolve().as_posix(),
@@ -211,9 +221,22 @@ def test_agent_runtime_registers_specialized_deepagent_subagents(monkeypatch):
     assert [tool.name for tool in subagents["information_collect_agent"]["tools"]] == [
         "feroxbuster",
         "nuclei_fingerprint",
+        "mcp_search",
+        "mcp_call",
     ]
     assert subagents["writeup_agent"]["model"] == "model:writeup_agent"
-    assert subagents["writeup_agent"]["tools"] == []
+    assert [tool.name for tool in subagents["writeup_agent"]["tools"]] == [
+        "mcp_search",
+        "mcp_call",
+    ]
+    assert [tool.name for tool in subagents["general-purpose"]["tools"]] == [
+        "mcp_search",
+        "mcp_call",
+    ]
+    assert runtime.mcp_servers_for_agent("main_agent") == ["main-mcp"]
+    assert runtime.mcp_servers_for_agent("information_collect_agent") == ["info-mcp"]
+    assert runtime.mcp_servers_for_agent("writeup_agent") == ["writeup-mcp"]
+    assert runtime.mcp_servers_for_agent("general-purpose") == []
     assert build_llm_calls == [
         ("main_agent", {"streaming": True}),
         ("information_collect_agent", {}),
@@ -478,6 +501,7 @@ def test_agent_runtime_keeps_streaming_for_openai_compatible_base_url(monkeypatc
     runtime.build_llm("main_agent")
 
     assert captured["streaming"] is True
+    assert captured["stream_chunk_timeout"] is None
     assert captured["stream_usage"] is False
     assert captured["base_url"] == "https://proxy.example/v1"
 
@@ -504,4 +528,14 @@ def test_agent_runtime_keeps_streaming_for_native_openai(monkeypatch):
     runtime.build_llm("main_agent")
 
     assert captured["streaming"] is True
+    assert captured["stream_chunk_timeout"] is None
     assert "stream_usage" not in captured
+
+
+def test_agent_runtime_treats_openai_stream_chunk_timeout_as_retryable():
+    assert is_retryable_stream_error(
+        RuntimeError(
+            "No streaming chunk received for 120.0s "
+            "(model=gpt-5.5, chunks_received=4)."
+        )
+    )

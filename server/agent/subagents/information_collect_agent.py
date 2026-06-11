@@ -207,7 +207,7 @@ class InformationCollectAgent(SubAgent):
             middleware=[ToolCallIdMiddleware()],
             context_schema=SessionContext,
             name=INFORMATION_COLLECT_AGENT_NAME,
-            skills=skill_sources or None,
+            skills=[f"./skills/{self.skill_source_dir}"],
             backend=backend,
         )
 

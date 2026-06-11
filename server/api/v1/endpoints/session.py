@@ -217,15 +217,23 @@ async def _start_agent_run(
     active_session.tools = payload.tools
     active_session.mcp_servers = payload.mcp_servers
     active_session.agent_configs = payload.agent_configs
+    active_session.agent_mcp_servers = payload.agent_mcp_servers
     
     # Explicitly flag JSON fields as modified to ensure SQLAlchemy persists them
     flag_modified(active_session, "tools")
     flag_modified(active_session, "mcp_servers")
     flag_modified(active_session, "agent_configs")
+    flag_modified(active_session, "agent_mcp_servers")
     
     await session.commit()
     await session.refresh(active_session)
-    logger.info(f"Session {active_session.id} config updated. Tools: {active_session.tools}, MCP: {active_session.mcp_servers}")
+    logger.info(
+        "Session %s config updated. Tools: %s, MCP: %s, Agent MCP: %s",
+        active_session.id,
+        active_session.tools,
+        active_session.mcp_servers,
+        active_session.agent_mcp_servers,
+    )
     
     active_session_id = active_session.id
 
@@ -512,7 +520,7 @@ async def update_session_template(
 
     for key, value in update_data.items():
         setattr(template, key, value)
-        if key in {"tools", "mcp_servers", "agent_configs"}:
+        if key in {"tools", "mcp_servers", "agent_configs", "agent_mcp_servers"}:
             flag_modified(template, key)
 
     template.updated_at = datetime.now(timezone.utc)
@@ -583,13 +591,19 @@ async def update_session(
 
     for key, value in update_data.items():
         setattr(db_session, key, value)
-        if key in ["tools", "mcp_servers", "agent_configs"]:
+        if key in ["tools", "mcp_servers", "agent_configs", "agent_mcp_servers"]:
             flag_modified(db_session, key)
 
     db_session.updated_at = datetime.now(timezone.utc)
     await session.commit()
     await session.refresh(db_session)
-    logger.info(f"Session {db_session.id} patched. Tools: {db_session.tools}, MCP: {db_session.mcp_servers}")
+    logger.info(
+        "Session %s patched. Tools: %s, MCP: %s, Agent MCP: %s",
+        db_session.id,
+        db_session.tools,
+        db_session.mcp_servers,
+        db_session.agent_mcp_servers,
+    )
     return db_session
 
 @router.get("/sessions/{session_id}/messages", response_model=list[AgentMessageResponse])

@@ -34,6 +34,7 @@ class SubAgent:
         cls,
         *,
         build_llm: Callable[[str], Any],
+        extra_tools: list[Any] | None = None,
     ) -> dict[str, Any]:
         """Return the dict schema consumed by DeepAgent."""
 
@@ -42,7 +43,7 @@ class SubAgent:
             "description": cls.description,
             "system_prompt": cls.system_prompt,
             "model": build_llm(cls.name),
-            "tools": cls.tools(),
+            "tools": [*cls.tools(), *(extra_tools or [])],
             "skills": [
                 (Path("./skills") / cls.skill_source_dir).resolve().as_posix()
             ]

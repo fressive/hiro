@@ -23,6 +23,7 @@ class AgentSession(Base):
     tools = Column(JSON, nullable=True)
     mcp_servers = Column(JSON, nullable=True)
     agent_configs = Column(JSON, nullable=True)
+    agent_mcp_servers = Column(JSON, nullable=True)
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,
@@ -56,6 +57,7 @@ class AgentSessionTemplate(Base):
     tools = Column(JSON, nullable=True)
     mcp_servers = Column(JSON, nullable=True)
     agent_configs = Column(JSON, nullable=True)
+    agent_mcp_servers = Column(JSON, nullable=True)
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,

@@ -20,6 +20,7 @@ class AgentRunRequest(BaseModel):
     tools: Optional[List[str]] = None
     mcp_servers: Optional[List[str]] = None
     agent_configs: Optional[Dict[str, Optional[int]]] = None
+    agent_mcp_servers: Optional[Dict[str, Optional[List[str]]]] = None
 
 
 class ToolResponse(BaseModel):
@@ -55,6 +56,7 @@ class AgentSessionUpdate(BaseModel):
     tools: Optional[List[str]] = None
     mcp_servers: Optional[List[str]] = None
     agent_configs: Optional[Dict[str, Optional[int]]] = None
+    agent_mcp_servers: Optional[Dict[str, Optional[List[str]]]] = None
 
 
 class AgentSessionResponse(BaseModel):
@@ -73,6 +75,7 @@ class AgentSessionResponse(BaseModel):
     tools: Optional[List[str]] = None
     mcp_servers: Optional[List[str]] = None
     agent_configs: Optional[Dict[str, Optional[int]]] = None
+    agent_mcp_servers: Optional[Dict[str, Optional[List[str]]]] = None
     created_at: datetime
     updated_at: datetime
 
@@ -89,6 +92,7 @@ class AgentSessionTemplateCreate(BaseModel):
     tools: Optional[List[str]] = None
     mcp_servers: Optional[List[str]] = None
     agent_configs: Optional[Dict[str, Optional[int]]] = None
+    agent_mcp_servers: Optional[Dict[str, Optional[List[str]]]] = None
 
 
 class AgentSessionTemplateUpdate(BaseModel):
@@ -104,6 +108,7 @@ class AgentSessionTemplateUpdate(BaseModel):
     tools: Optional[List[str]] = None
     mcp_servers: Optional[List[str]] = None
     agent_configs: Optional[Dict[str, Optional[int]]] = None
+    agent_mcp_servers: Optional[Dict[str, Optional[List[str]]]] = None
 
 
 class AgentSessionTemplateResponse(BaseModel):
@@ -122,6 +127,7 @@ class AgentSessionTemplateResponse(BaseModel):
     tools: Optional[List[str]] = None
     mcp_servers: Optional[List[str]] = None
     agent_configs: Optional[Dict[str, Optional[int]]] = None
+    agent_mcp_servers: Optional[Dict[str, Optional[List[str]]]] = None
     created_at: datetime
     updated_at: datetime
 

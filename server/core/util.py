@@ -1,8 +1,10 @@
 import subprocess
+import os
 from .logger import logger
 from pathlib import Path
 
 DATA_PATH = Path("./data")
+NUCLEI_TEMPLATES_DIRNAME = "nuclei-templates"
     
 def get_data_path(session_id: int) -> Path:
     """Get session path with specified session ID. The directory will be created if the path is not existed.
@@ -36,6 +38,7 @@ def bwrap_params(session_id: int):
             /lib64 -> /lib64
             /bin -> /bin
             /etc -> /etc        
+            ~/nuclei-templates -> ~/nuclei-templates, when present
             
             !!!Warning!!!: The /etc directory is readable in the sandbox, some sensitive data may suffer risk of leakage.
             
@@ -65,12 +68,22 @@ def bwrap_params(session_id: int):
     binds = {
         str(data_path.absolute()): "/data"
     }
+
+    nuclei_templates_path = _get_nuclei_templates_path()
+    extra_dirs = (
+        _sandbox_parent_dirs(nuclei_templates_path)
+        if nuclei_templates_path.is_dir()
+        else []
+    )
+    extra_ro_binds = _nuclei_templates_ro_binds(nuclei_templates_path)
+    sandbox_dirs = _unique_paths(["/tmp", *extra_dirs])
     
     return [
         "bwrap",
         *[item for sublist in [["--ro-bind", k, v] for k, v in ro_binds.items()] for item in sublist],
+        *[item for sublist in [["--dir", path] for path in sandbox_dirs] for item in sublist],
+        *[item for sublist in [["--ro-bind", k, v] for k, v in extra_ro_binds.items()] for item in sublist],
         *[item for sublist in [["--bind", k, v] for k, v in binds.items()] for item in sublist],
-        "--dir", "/tmp",
         "--proc", "/proc",
         "--dev", "/dev",
         "--chdir", "/data",
@@ -78,6 +91,42 @@ def bwrap_params(session_id: int):
         "--share-net",
         "--die-with-parent",
     ]
+
+
+def _get_nuclei_templates_path() -> Path:
+    home = Path(os.path.expanduser("~"))
+    return home / NUCLEI_TEMPLATES_DIRNAME
+
+
+def _nuclei_templates_ro_binds(templates_path: Path) -> dict[str, str]:
+    if not templates_path.is_dir():
+        return {}
+    absolute_path = str(templates_path.absolute())
+    return {absolute_path: absolute_path}
+
+
+def _sandbox_parent_dirs(path: Path) -> list[str]:
+    if not path.is_absolute():
+        path = path.absolute()
+
+    parents = []
+    for parent in reversed(path.parents):
+        if str(parent) == "/":
+            continue
+        parents.append(str(parent))
+    return parents
+
+
+def _unique_paths(paths: list[str]) -> list[str]:
+    unique = []
+    seen = set()
+    for path in paths:
+        if path in seen:
+            continue
+        seen.add(path)
+        unique.append(path)
+    return unique
+
 
 def run_command(
     command: str | list[str],

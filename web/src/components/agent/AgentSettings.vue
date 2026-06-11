@@ -19,6 +19,7 @@ const props = defineProps<{
   mcpServers: MCPServer[]
   selectedMcpServers: string[]
   agentConfigs: Record<string, number | null>
+  agentMcpServers: Record<string, string[] | null>
   systemPrompt: string
   temperature: number
   maxTokens: number
@@ -39,6 +40,7 @@ const emit = defineEmits<{
   (e: 'update:enable1mContext', val: boolean): void
   (e: 'update:enableRag', val: boolean): void
   (e: 'update:agentConfigs', val: Record<string, number | null>): void
+  (e: 'update:agentMcpServers', val: Record<string, string[] | null>): void
   (e: 'save-template'): void
   (e: 'apply-template', templateId: number): void
   (e: 'delete-template', templateId: number): void
@@ -147,6 +149,10 @@ const subagentConfigValue = (agentName: string) => {
   return typeof value === 'number' ? String(value) : ''
 }
 
+const subagentMcpServerNames = (agentName: string) => (
+  props.agentMcpServers?.[agentName]?.filter(Boolean) || []
+)
+
 const formatSubagentName = (name: string) => (
   name
     .split('_')
@@ -164,6 +170,24 @@ const onSubagentConfigChange = (agentName: string, e: Event) => {
     nextConfigs[agentName] = Number(target.value)
   }
   emit('update:agentConfigs', nextConfigs)
+}
+
+const toggleSubagentMcpServer = (agentName: string, serverName: string) => {
+  const nextServers = { ...(props.agentMcpServers || {}) }
+  const current = [...subagentMcpServerNames(agentName)]
+  const index = current.indexOf(serverName)
+  if (index >= 0) {
+    current.splice(index, 1)
+  } else {
+    current.push(serverName)
+  }
+
+  if (current.length === 0) {
+    delete nextServers[agentName]
+  } else {
+    nextServers[agentName] = current
+  }
+  emit('update:agentMcpServers', nextServers)
 }
 
 watch(
@@ -276,6 +300,32 @@ const deleteSelectedTemplate = () => {
                 {{ config.name }} · {{ config.model }}
               </option>
             </select>
+            <div class="space-y-1.5">
+              <div class="text-[10px] font-medium uppercase text-muted-foreground">
+                MCP Servers
+              </div>
+              <div v-if="mcpServers.length === 0" class="text-[10px] text-muted-foreground">
+                No enabled MCP servers.
+              </div>
+              <div v-else class="grid gap-1.5">
+                <label
+                  v-for="server in mcpServers"
+                  :key="`${subagent.name}-${server.id}`"
+                  :for="`subagent-mcp-${subagent.name}-${server.name}`"
+                  class="flex min-w-0 items-center gap-2 text-[11px]"
+                >
+                  <input
+                    type="checkbox"
+                    :id="`subagent-mcp-${subagent.name}-${server.name}`"
+                    :checked="subagentMcpServerNames(subagent.name).includes(server.name)"
+                    @change="toggleSubagentMcpServer(subagent.name, server.name)"
+                    :disabled="isRunning"
+                    class="h-3.5 w-3.5"
+                  />
+                  <span class="min-w-0 truncate">{{ server.name }}</span>
+                </label>
+              </div>
+            </div>
             <p class="line-clamp-2 text-[10px] text-muted-foreground">
               {{ subagent.description }}
             </p>
@@ -353,7 +403,7 @@ const deleteSelectedTemplate = () => {
 
     <div class="space-y-2">
       <div class="flex items-center justify-between">
-        <Label>MCP Servers</Label>
+        <Label>Main Agent MCP Servers</Label>
         <Button variant="ghost" size="sm" class="h-8 px-2" @click="showMcp = !showMcp">
           <ChevronUp v-if="showMcp" class="h-4 w-4" />
           <ChevronDown v-else class="h-4 w-4" />

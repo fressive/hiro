@@ -47,6 +47,7 @@ export type AgentSession = {
   tools?: string[] | null
   mcp_servers?: string[] | null
   agent_configs?: Record<string, number | null> | null
+  agent_mcp_servers?: Record<string, string[] | null> | null
   created_at: string
   updated_at: string
 }
@@ -63,6 +64,7 @@ export type AgentSessionTemplate = {
   tools?: string[] | null
   mcp_servers?: string[] | null
   agent_configs?: Record<string, number | null> | null
+  agent_mcp_servers?: Record<string, string[] | null> | null
   created_at: string
   updated_at: string
 }

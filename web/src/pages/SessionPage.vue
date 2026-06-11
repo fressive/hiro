@@ -45,6 +45,7 @@ const availableSubagents = ref<SubAgent[]>([])
 const selectedTools = ref<string[]>([])
 const mcpServers = ref<MCPServer[]>([])
 const selectedMcpServers = ref<string[]>([])
+const agentMcpServers = ref<Record<string, string[] | null>>({})
 const isLoading = ref(false)
 const isToolsLoading = ref(false)
 const isSubagentsLoading = ref(false)
@@ -602,6 +603,7 @@ const onSessionChange = (id: number | null) => {
       selectedTools.value = session.tools || availableTools.value.map(t => t.name)
       selectedMcpServers.value = session.mcp_servers || []
       agentConfigs.value = { ...(session.agent_configs || {}) }
+      agentMcpServers.value = { ...(session.agent_mcp_servers || {}) }
       
       // Reset initial load flag after a short delay to let watchers settle
       setTimeout(() => { isInitialLoad = false }, 100)
@@ -616,6 +618,7 @@ const onSessionChange = (id: number | null) => {
     localStorage.removeItem(selectedSessionStorageKey)
     messages.value = []
     agentConfigs.value = {}
+    agentMcpServers.value = {}
     clearOutput()
   }
 }
@@ -785,6 +788,7 @@ const saveSessionConfig = async () => {
         tools: selectedTools.value,
         mcp_servers: selectedMcpServers.value,
         agent_configs: agentConfigs.value,
+        agent_mcp_servers: agentMcpServers.value,
       }),
     })
     // Also update the local sessions array to keep it in sync
@@ -799,6 +803,7 @@ const saveSessionConfig = async () => {
       session.tools = selectedTools.value
       session.mcp_servers = selectedMcpServers.value
       session.agent_configs = { ...agentConfigs.value }
+      session.agent_mcp_servers = { ...agentMcpServers.value }
     }
   } catch (error) {
     console.error('Failed to auto-save session config:', error)
@@ -822,6 +827,7 @@ const currentSettingsPayload = (name?: string) => ({
   tools: [...selectedTools.value],
   mcp_servers: [...selectedMcpServers.value],
   agent_configs: { ...agentConfigs.value },
+  agent_mcp_servers: { ...agentMcpServers.value },
 })
 
 const saveCurrentSettingsAsTemplate = async (templateName: string) => {
@@ -880,6 +886,7 @@ const applySessionTemplate = async (templateId: number) => {
   selectedTools.value = template.tools || []
   selectedMcpServers.value = template.mcp_servers || []
   agentConfigs.value = { ...(template.agent_configs || {}) }
+  agentMcpServers.value = { ...(template.agent_mcp_servers || {}) }
   await nextTick()
   await saveSessionConfig()
 }
@@ -928,6 +935,7 @@ const startRun = async () => {
         tools: selectedTools.value,
         mcp_servers: selectedMcpServers.value,
         agent_configs: agentConfigs.value,
+        agent_mcp_servers: agentMcpServers.value,
       },
     })
   } catch (error: any) {
@@ -1317,6 +1325,7 @@ watch(
     selectedTools, 
     selectedMcpServers,
     agentConfigs,
+    agentMcpServers,
   ],
   () => {
     if (isInitialLoad) return
@@ -1697,6 +1706,7 @@ watch(
                 v-model:enable1mContext="enable1mContext"
                 v-model:enableRag="enableRag"
                 v-model:agentConfigs="agentConfigs"
+                v-model:agentMcpServers="agentMcpServers"
                 :configs="configs"
                 :availableTools="availableTools"
                 :availableSubagents="availableSubagents"

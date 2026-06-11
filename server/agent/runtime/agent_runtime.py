@@ -43,6 +43,7 @@ RETRYABLE_STREAM_ERROR_MARKERS = (
     "response.completed",
     "remoteprotocolerror",
     "incompleteread",
+    "no streaming chunk received",
 )
 
 SUBAGENT_DELEGATION_PROMPT = """## DeepAgent Subagent Delegation
@@ -98,7 +99,7 @@ class AgentRuntime:
         self.agent_configs = agent_configs or {}
         self._main_agent: Any | None = None
         self._fallback_agent: Any | None = None
-        self._mcp_router_tools: list[Any] | None = None
+        self._mcp_router_tools_by_agent: dict[str, list[Any]] = {}
         self._agent_model_names: dict[str, str] | None = None
 
     def configure_run(
@@ -120,14 +121,15 @@ class AgentRuntime:
         """Build static instructions used when the session main agent is created."""
 
         full_system_prompt = self.payload.system_prompt or SYSTEM_PROMPT
-        # MCP tools are stable router tools on the session agent. They read the
-        # current session MCP server list when called instead of binding to one
+        # MCP tools are stable router tools on each agent. They read the
+        # current run's MCP server list when called instead of binding to one
         # run's MCP sessions.
         full_system_prompt += (
-            "\n\nMCP access, when configured for this session, is available "
-            "through two router tools: use mcp_search to find available MCP "
-            "tools and schemas, then use mcp_call with the exact tool_name "
-            "and JSON arguments."
+            "\n\nMCP access, when configured for the current agent, is "
+            "available through two router tools: use mcp_search to find "
+            "available MCP tools and schemas, then use mcp_call with the exact "
+            "tool_name and JSON arguments. The main agent and each subagent may "
+            "have different MCP servers."
         )
         return full_system_prompt
 
@@ -315,7 +317,7 @@ class AgentRuntime:
         llm = self.build_llm("main_agent", streaming=streaming)
         return create_deep_agent(
             llm,
-            tools=self.selected_builtin_tools() + self.mcp_router_tools(),
+            tools=self.selected_builtin_tools() + self.mcp_router_tools("main_agent"),
             context_schema=SessionContext,
             backend=self.build_backend(),
             skills=skill_sources,
@@ -343,12 +345,17 @@ class AgentRuntime:
             {
                 **GENERAL_PURPOSE_SUBAGENT,
                 "skills": skill_sources,
+                "tools": [
+                    *GENERAL_PURPOSE_SUBAGENT.get("tools", []),
+                    *self.mcp_router_tools("general-purpose"),
+                ],
                 "middleware": [ToolCallIdMiddleware()],
             }
         ]
         subagents.extend(
             subagent_class.to_deepagent_config(
                 build_llm=self.build_llm,
+                extra_tools=self.mcp_router_tools(subagent_class.name),
             )
             for subagent_class in self.specialized_subagent_classes()
         )
@@ -400,8 +407,10 @@ class AgentRuntime:
         }
         if not streaming:
             init_kwargs["disable_streaming"] = True
-        elif provider == "openai" and base_url:
-            init_kwargs["stream_usage"] = False
+        elif provider == "openai":
+            init_kwargs["stream_chunk_timeout"] = None
+            if base_url:
+                init_kwargs["stream_usage"] = False
 
         if self.payload.temperature is not None:
             init_kwargs["temperature"] = self.payload.temperature
@@ -450,14 +459,26 @@ class AgentRuntime:
             return []
         return [tool for tool in agent_tools if tool.name in self.payload.tools]
 
-    def mcp_router_tools(self) -> list[Any]:
-        """Return stable MCP router tools for the cached session main agent."""
+    def mcp_servers_for_agent(self, agent_name: str | None) -> list[str]:
+        """Return configured MCP server names for the requested agent."""
 
-        if self._mcp_router_tools is None:
-            self._mcp_router_tools = create_dynamic_mcp_router_tools(
-                lambda: self.payload.mcp_servers,
+        if agent_name in (None, "main_agent"):
+            return _normalize_mcp_server_names(self.payload.mcp_servers)
+        agent_mcp_servers = self.payload.agent_mcp_servers or {}
+        return _normalize_mcp_server_names(agent_mcp_servers.get(agent_name))
+
+    def mcp_router_tools(self, agent_name: str = "main_agent") -> list[Any]:
+        """Return stable MCP router tools for a cached session agent."""
+
+        if agent_name not in self._mcp_router_tools_by_agent:
+            self._mcp_router_tools_by_agent[agent_name] = (
+                create_dynamic_mcp_router_tools(
+                    lambda agent_name=agent_name: self.mcp_servers_for_agent(
+                        agent_name
+                    ),
+                )
             )
-        return self._mcp_router_tools
+        return self._mcp_router_tools_by_agent[agent_name]
 
     def build_backend(self) -> CompositeBackend:
         """Create the DeepAgent backend for session-local file operations."""
@@ -483,6 +504,21 @@ class AgentRuntime:
             default=SessionSandboxedBackend(self.session_id),
             routes=routes,
         )
+
+
+def _normalize_mcp_server_names(server_names: Any) -> list[str]:
+    if not server_names:
+        return []
+
+    normalized = []
+    seen = set()
+    for server_name in server_names:
+        name = str(server_name).strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        normalized.append(name)
+    return normalized
 
 
 def _projection_aiter(target: Any, name: str) -> AsyncIterator[Any] | None:

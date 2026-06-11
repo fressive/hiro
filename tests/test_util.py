@@ -21,6 +21,27 @@ def test_get_data_path(tmp_path):
         path2 = get_data_path(session_id)
         assert path2 == expected_path
 
+def test_bwrap_params_maps_nuclei_templates_readonly(monkeypatch, tmp_path):
+    home = tmp_path / "home" / "rina"
+    templates_path = home / "nuclei-templates"
+    templates_path.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+
+    with patch("server.core.util.DATA_PATH", tmp_path / "data"):
+        params = bwrap_params(123)
+
+    absolute_templates_path = str(templates_path.absolute())
+    assert ["--ro-bind", absolute_templates_path, absolute_templates_path] == params[
+        params.index(absolute_templates_path) - 1 : params.index(absolute_templates_path) + 2
+    ]
+
+    for parent in templates_path.parents:
+        if str(parent) == "/":
+            continue
+        assert ["--dir", str(parent)] == params[
+            params.index(str(parent)) - 1 : params.index(str(parent)) + 1
+        ]
+
 @patch("subprocess.run")
 def test_run_command_success(mock_run):
     # Setup mock

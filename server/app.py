@@ -71,3 +71,7 @@ async def _ensure_agent_config_columns(conn) -> None:
             await conn.execute(
                 text(f"ALTER TABLE {table_name} ADD COLUMN agent_configs JSON")
             )
+        if "agent_mcp_servers" not in columns:
+            await conn.execute(
+                text(f"ALTER TABLE {table_name} ADD COLUMN agent_mcp_servers JSON")
+            )

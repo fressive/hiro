@@ -98,9 +98,9 @@ def create_dynamic_mcp_router_tools(
             coroutine=mcp_search,
             name="mcp_search",
             description=(
-                "Search the MCP servers configured for this session. Use this "
-                "before mcp_call when you need an external MCP capability or "
-                "an exact argument schema."
+                "Search the MCP servers configured for the current agent. Use "
+                "this before mcp_call when you need an external MCP capability "
+                "or an exact argument schema."
             ),
             args_schema=DynamicMcpSearchInput,
         ),
@@ -145,7 +145,7 @@ def _no_mcp_servers_result() -> str:
             "tools": [],
             "count": 0,
             "total_available": 0,
-            "hint": "No MCP servers are configured for this session.",
+            "hint": "No MCP servers are configured for the current agent.",
         },
         ensure_ascii=False,
     )
@@ -158,7 +158,7 @@ def _mcp_call_error(tool_name: str, message: str) -> str:
             "tool_name": tool_name,
             "resolved_tool_name": None,
             "error": {"type": "MCPUnavailable", "message": message},
-            "hint": "Call mcp_search after enabling an MCP server for this session.",
+            "hint": "Call mcp_search after enabling an MCP server for this agent.",
         },
         ensure_ascii=False,
     )
