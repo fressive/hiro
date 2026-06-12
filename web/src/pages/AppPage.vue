@@ -43,12 +43,14 @@ type UsagePoint = {
   date: string
   tokens: number
   input_tokens: number
+  uncached_input_tokens: number
   cached_input_tokens: number
   output_tokens: number
 }
 
 type ModelUsage = {
   input: number
+  uncached_input: number
   cached: number
   output: number
   total: number
@@ -57,6 +59,7 @@ type ModelUsage = {
 type GlobalStats = {
   total_tokens: number
   total_input_tokens: number
+  total_uncached_input_tokens: number
   total_cached_input_tokens: number
   total_output_tokens: number
   model_usage: Record<string, ModelUsage>
@@ -95,6 +98,7 @@ const selectedSessionStorageKey = 'HIRO_SELECTED_AGENT_SESSION_ID'
 const emptyStats: GlobalStats = {
   total_tokens: 0,
   total_input_tokens: 0,
+  total_uncached_input_tokens: 0,
   total_cached_input_tokens: 0,
   total_output_tokens: 0,
   model_usage: {},
@@ -112,8 +116,8 @@ const mcpServers = ref<MCPServer[]>([])
 const tools = ref<Tool[]>([])
 
 const usageChartConfig = {
-  input_tokens: {
-    label: 'Input',
+  uncached_input_tokens: {
+    label: 'Uncached',
     color: 'var(--chart-2)',
   },
   cached_input_tokens: {
@@ -127,8 +131,8 @@ const usageChartConfig = {
 }
 
 const modelChartConfig = {
-  input: {
-    label: 'Input',
+  uncached_input: {
+    label: 'Uncached',
     color: 'var(--chart-2)',
   },
   cached: {
@@ -193,14 +197,42 @@ const loadDashboard = async () => {
   isLoading.value = false
 }
 
-const normalizeStats = (value: Partial<GlobalStats> | null | undefined): GlobalStats => ({
-  total_tokens: Number(value?.total_tokens || 0),
-  total_input_tokens: Number(value?.total_input_tokens || 0),
-  total_cached_input_tokens: Number(value?.total_cached_input_tokens || 0),
-  total_output_tokens: Number(value?.total_output_tokens || 0),
-  model_usage: value?.model_usage || {},
-  usage_over_time: Array.isArray(value?.usage_over_time) ? value.usage_over_time : [],
-})
+const tokenInputParts = (
+  inputTokens: number | null | undefined,
+  cachedInputTokens: number | null | undefined,
+) => {
+  const input = Number(inputTokens || 0)
+  const cached = Number(cachedInputTokens || 0)
+  if (cached > input) {
+    return {
+      input: input + cached,
+      uncached: input,
+      cached,
+    }
+  }
+  return {
+    input,
+    uncached: Math.max(input - cached, 0),
+    cached,
+  }
+}
+
+const normalizeStats = (value: Partial<GlobalStats> | null | undefined): GlobalStats => {
+  const inputParts = tokenInputParts(
+    value?.total_input_tokens,
+    value?.total_cached_input_tokens,
+  )
+
+  return {
+    total_tokens: Number(value?.total_tokens || 0),
+    total_input_tokens: inputParts.input,
+    total_uncached_input_tokens: Number(value?.total_uncached_input_tokens ?? inputParts.uncached),
+    total_cached_input_tokens: inputParts.cached,
+    total_output_tokens: Number(value?.total_output_tokens || 0),
+    model_usage: value?.model_usage || {},
+    usage_over_time: Array.isArray(value?.usage_over_time) ? value.usage_over_time : [],
+  }
+}
 
 const formatNumber = (value: number | null | undefined) => {
   return Number(value || 0).toLocaleString()
@@ -286,19 +318,23 @@ const enabledMcpCount = computed(() => {
 const usageTrend = computed(() => {
   return stats.value.usage_over_time
     .slice(-14)
-    .map(point => ({
-      ...point,
-      date: formatShortDate(point.date),
-      input_tokens: Number(point.input_tokens || 0),
-      cached_input_tokens: Number(point.cached_input_tokens || 0),
-      output_tokens: Number(point.output_tokens || 0),
-      tokens: Number(point.tokens || 0),
-    }))
+    .map(point => {
+      const inputParts = tokenInputParts(point.input_tokens, point.cached_input_tokens)
+      return {
+        ...point,
+        date: formatShortDate(point.date),
+        input_tokens: inputParts.input,
+        uncached_input_tokens: Number(point.uncached_input_tokens ?? inputParts.uncached),
+        cached_input_tokens: inputParts.cached,
+        output_tokens: Number(point.output_tokens || 0),
+        tokens: Number(point.tokens || 0),
+      }
+    })
 })
 const tokenBreakdown = computed(() => [
   {
-    label: 'Input',
-    value: stats.value.total_input_tokens,
+    label: 'Uncached',
+    value: stats.value.total_uncached_input_tokens,
     class: 'bg-[var(--chart-2)]',
   },
   {
@@ -314,20 +350,24 @@ const tokenBreakdown = computed(() => [
 ])
 const topModels = computed(() => {
   return Object.entries(stats.value.model_usage)
-    .map(([name, usage]) => ({
-      name,
-      input: Number(usage.input || 0),
-      cached: Number(usage.cached || 0),
-      output: Number(usage.output || 0),
-      total: Number(usage.total || 0),
-    }))
+    .map(([name, usage]) => {
+      const inputParts = tokenInputParts(usage.input, usage.cached)
+      return {
+        name,
+        input: inputParts.input,
+        uncached_input: Number(usage.uncached_input ?? inputParts.uncached),
+        cached: inputParts.cached,
+        output: Number(usage.output || 0),
+        total: Number(usage.total || 0),
+      }
+    })
     .sort((a, b) => b.total - a.total)
     .slice(0, 6)
 })
 const modelUsageChartData = computed(() => {
   return topModels.value.map(model => ({
     model: model.name,
-    input: model.input,
+    uncached_input: model.uncached_input,
     cached: model.cached,
     output: model.output,
   }))
@@ -341,7 +381,7 @@ const summaryCards = computed(() => [
   {
     label: 'Total Tokens',
     value: formatCompactNumber(stats.value.total_tokens),
-    detail: `${formatNumber(stats.value.total_input_tokens)} input / ${formatNumber(stats.value.total_output_tokens)} output`,
+    detail: `${formatNumber(stats.value.total_uncached_input_tokens)} uncached / ${formatNumber(stats.value.total_cached_input_tokens)} cached / ${formatNumber(stats.value.total_output_tokens)} output`,
     icon: BarChart3,
     tone: 'bg-primary text-primary-foreground',
   },
@@ -555,7 +595,7 @@ onMounted(loadDashboard)
                     <LineChart
                       :data="usageTrend"
                       index="date"
-                      :categories="['input_tokens', 'cached_input_tokens', 'output_tokens']"
+                      :categories="['uncached_input_tokens', 'cached_input_tokens', 'output_tokens']"
                       :config="usageChartConfig"
                       :show-grid-line="true"
                       class="h-full"
@@ -607,7 +647,7 @@ onMounted(loadDashboard)
                     <BarChart
                       :data="modelUsageChartData"
                       index="model"
-                      :categories="['input', 'cached', 'output']"
+                      :categories="['uncached_input', 'cached', 'output']"
                       :config="modelChartConfig"
                       :show-x-axis="false"
                       :show-y-axis="false"

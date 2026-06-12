@@ -10,6 +10,7 @@ from server.agent.persistence.token_usage import (
     message_token_usage,
     normalize_token_usage,
     subtract_token_usage,
+    uncached_input_tokens,
 )
 from server.agent.events.streaming import StreamCallbackHandler, stream_text_segments
 
@@ -57,6 +58,69 @@ def test_normalize_token_usage_reads_openai_cached_prompt_tokens():
         "output_tokens": 20,
         "cached_input_tokens": 75,
     }
+
+
+def test_normalize_token_usage_clamps_cached_tokens_to_input_tokens():
+    usage = {
+        "input_tokens": 10,
+        "output_tokens": 2,
+        "input_token_details": {"cache_read": 30},
+    }
+
+    assert normalize_token_usage(usage) == {
+        "input_tokens": 10,
+        "output_tokens": 2,
+        "cached_input_tokens": 10,
+    }
+
+
+def test_normalize_token_usage_counts_top_level_cache_read_as_input_tokens():
+    usage = {
+        "input_tokens": 10,
+        "cache_creation_input_tokens": 5,
+        "cache_read_input_tokens": 30,
+        "output_tokens": 2,
+    }
+
+    assert normalize_token_usage(usage) == {
+        "input_tokens": 45,
+        "output_tokens": 2,
+        "cached_input_tokens": 30,
+    }
+
+
+def test_normalize_token_usage_uses_total_to_avoid_recounting_cache_read():
+    usage = {
+        "input_tokens": 40,
+        "cache_read_input_tokens": 30,
+        "output_tokens": 2,
+        "total_tokens": 42,
+    }
+
+    assert normalize_token_usage(usage) == {
+        "input_tokens": 40,
+        "output_tokens": 2,
+        "cached_input_tokens": 30,
+    }
+
+
+def test_normalize_token_usage_counts_split_cache_before_inferring_output():
+    usage = {
+        "input_tokens": 10,
+        "cache_read_input_tokens": 30,
+        "total_tokens": 45,
+    }
+
+    assert normalize_token_usage(usage) == {
+        "input_tokens": 40,
+        "output_tokens": 5,
+        "cached_input_tokens": 30,
+    }
+
+
+def test_uncached_input_tokens_treats_cached_as_input_subset():
+    assert uncached_input_tokens(100, 75) == 25
+    assert uncached_input_tokens(10, 30) == 0
 
 
 def test_message_token_usage_reads_langchain_nested_cache_metadata():

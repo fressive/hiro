@@ -25,6 +25,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from server.agent.custom_agent import CustomAgent
 from server.agent.events.session_events import SessionEventHub
 from server.agent.events.streaming import AgentStreamEvent
+from server.agent.persistence import token_usage
 from server.agent.trace.execution_trace import (
     attach_trace_metadata_fallback,
     normalize_trace_metadata,
@@ -56,6 +57,30 @@ router = APIRouter()
 _active_agent_tasks: dict[int, asyncio.Task] = {}
 _session_event_hubs: dict[int, SessionEventHub] = {}
 _session_agents: dict[int, CustomAgent] = {}
+
+
+def _token_usage_parts(
+    input_tokens: int | None,
+    cached_input_tokens: int | None,
+    output_tokens: int | None,
+) -> dict[str, int]:
+    normalized_input = token_usage.token_count(input_tokens)
+    normalized_cached = token_usage.token_count(cached_input_tokens)
+    normalized_output = token_usage.token_count(output_tokens)
+    if not normalized_input and normalized_cached:
+        normalized_input = normalized_cached
+    elif normalized_cached > normalized_input:
+        normalized_input += normalized_cached
+    uncached_input = token_usage.uncached_input_tokens(
+        normalized_input, normalized_cached
+    )
+    return {
+        "input": normalized_input,
+        "uncached_input": uncached_input,
+        "cached": normalized_cached,
+        "output": normalized_output,
+        "total": normalized_input + normalized_output,
+    }
 
 
 def _is_session_running(session_id: int) -> bool:
@@ -660,8 +685,9 @@ async def get_session_stats(session_id: int, session: AsyncSession = Depends(get
         .order_by(AgentMessage.created_at.asc())
     )
     db_messages = result.scalars().all()
-    
+
     total_input_tokens = 0
+    total_uncached_input_tokens = 0
     total_cached_input_tokens = 0
     total_output_tokens = 0
     rounds = []
@@ -670,39 +696,55 @@ async def get_session_stats(session_id: int, session: AsyncSession = Depends(get
     round_index = 1
     for msg in db_messages:
         if msg.role == "assistant" and (msg.input_tokens or msg.output_tokens):
-            it = msg.input_tokens or 0
-            ct = msg.cached_input_tokens or 0
-            ot = msg.output_tokens or 0
+            usage = _token_usage_parts(
+                msg.input_tokens, msg.cached_input_tokens, msg.output_tokens
+            )
+            it = usage["input"]
+            uit = usage["uncached_input"]
+            ct = usage["cached"]
+            ot = usage["output"]
             total_input_tokens += it
+            total_uncached_input_tokens += uit
             total_cached_input_tokens += ct
             total_output_tokens += ot
 
             model_name = msg.model or "unknown"
             if model_name not in model_usage:
-                model_usage[model_name] = {"input": 0, "cached": 0, "output": 0, "total": 0}
+                model_usage[model_name] = {
+                    "input": 0,
+                    "uncached_input": 0,
+                    "cached": 0,
+                    "output": 0,
+                    "total": 0,
+                }
             model_usage[model_name]["input"] += it
+            model_usage[model_name]["uncached_input"] += uit
             model_usage[model_name]["cached"] += ct
             model_usage[model_name]["output"] += ot
-            model_usage[model_name]["total"] += (it + ot)
+            model_usage[model_name]["total"] += usage["total"]
 
-            rounds.append({
-                "step": f"Round {round_index}",
-                "tokens": it + ot,
-                "input_tokens": it,
-                "cached_input_tokens": ct,
-                "output_tokens": ot,
-                "model": model_name,
-                "created_at": msg.created_at.isoformat()
-            })
+            rounds.append(
+                {
+                    "step": f"Round {round_index}",
+                    "tokens": usage["total"],
+                    "input_tokens": it,
+                    "uncached_input_tokens": uit,
+                    "cached_input_tokens": ct,
+                    "output_tokens": ot,
+                    "model": model_name,
+                    "created_at": msg.created_at.isoformat(),
+                }
+            )
             round_index += 1
 
     return {
         "total_tokens": total_input_tokens + total_output_tokens,
         "total_input_tokens": total_input_tokens,
+        "total_uncached_input_tokens": total_uncached_input_tokens,
         "total_cached_input_tokens": total_cached_input_tokens,
         "total_output_tokens": total_output_tokens,
         "model_usage": model_usage,
-        "rounds": rounds
+        "rounds": rounds,
     }
 
 @router.get("/stats")
@@ -715,46 +757,67 @@ async def get_global_stats(session: AsyncSession = Depends(get_session)):
         .order_by(AgentMessage.created_at.asc())
     )
     db_messages = result.scalars().all()
-    
+
     total_input_tokens = 0
+    total_uncached_input_tokens = 0
     total_cached_input_tokens = 0
     total_output_tokens = 0
     daily_usage = {}
     model_usage = {}
 
     for msg in db_messages:
-        it = msg.input_tokens or 0
-        ct = msg.cached_input_tokens or 0
-        ot = msg.output_tokens or 0
+        usage = _token_usage_parts(
+            msg.input_tokens, msg.cached_input_tokens, msg.output_tokens
+        )
+        it = usage["input"]
+        uit = usage["uncached_input"]
+        ct = usage["cached"]
+        ot = usage["output"]
         total_input_tokens += it
+        total_uncached_input_tokens += uit
         total_cached_input_tokens += ct
         total_output_tokens += ot
 
         # Aggregate by model
         model_name = msg.model or "unknown"
         if model_name not in model_usage:
-            model_usage[model_name] = {"input": 0, "cached": 0, "output": 0, "total": 0}
+            model_usage[model_name] = {
+                "input": 0,
+                "uncached_input": 0,
+                "cached": 0,
+                "output": 0,
+                "total": 0,
+            }
         model_usage[model_name]["input"] += it
+        model_usage[model_name]["uncached_input"] += uit
         model_usage[model_name]["cached"] += ct
         model_usage[model_name]["output"] += ot
-        model_usage[model_name]["total"] += (it + ot)
+        model_usage[model_name]["total"] += usage["total"]
 
         # Aggregate by date
         day = msg.created_at.date().isoformat()
         if day not in daily_usage:
-            daily_usage[day] = {"total": 0, "input": 0, "cached": 0, "output": 0}
-        daily_usage[day]["total"] += (it + ot)
+            daily_usage[day] = {
+                "total": 0,
+                "input": 0,
+                "uncached_input": 0,
+                "cached": 0,
+                "output": 0,
+            }
+        daily_usage[day]["total"] += usage["total"]
         daily_usage[day]["input"] += it
+        daily_usage[day]["uncached_input"] += uit
         daily_usage[day]["cached"] += ct
         daily_usage[day]["output"] += ot
 
     usage_over_time = [
         {
-            "date": day, 
+            "date": day,
             "tokens": data["total"],
             "input_tokens": data["input"],
+            "uncached_input_tokens": data["uncached_input"],
             "cached_input_tokens": data["cached"],
-            "output_tokens": data["output"]
+            "output_tokens": data["output"],
         }
         for day, data in sorted(daily_usage.items())
     ]
@@ -762,10 +825,11 @@ async def get_global_stats(session: AsyncSession = Depends(get_session)):
     return {
         "total_tokens": total_input_tokens + total_output_tokens,
         "total_input_tokens": total_input_tokens,
+        "total_uncached_input_tokens": total_uncached_input_tokens,
         "total_cached_input_tokens": total_cached_input_tokens,
         "total_output_tokens": total_output_tokens,
         "model_usage": model_usage,
-        "usage_over_time": usage_over_time
+        "usage_over_time": usage_over_time,
     }
 
 @router.get("/sessions/{session_id}/files", response_model=List[SessionFileResponse])

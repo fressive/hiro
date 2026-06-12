@@ -66,6 +66,10 @@ def add_token_usage(*usages: dict[str, int]) -> dict[str, int]:
     return total
 
 
+def uncached_input_tokens(input_tokens: int, cached_input_tokens: int) -> int:
+    return max(token_count(input_tokens) - token_count(cached_input_tokens), 0)
+
+
 def subtract_token_usage(
     usage: dict[str, int], subtract: dict[str, int]
 ) -> dict[str, int]:
@@ -84,14 +88,47 @@ def normalize_token_usage(usage: Any) -> dict[str, int]:
     input_tokens = first_token_count(usage, "input_tokens", "prompt_tokens")
     output_tokens = first_token_count(usage, "output_tokens", "completion_tokens")
 
+    cache_read_input_tokens = first_token_count(usage, "cache_read_input_tokens")
+    cache_creation_input_tokens = first_token_count(
+        usage, "cache_creation_input_tokens"
+    )
     prompt_cache_hit_tokens = first_token_count(
-        usage, "prompt_cache_hit_tokens", "cache_read_input_tokens"
+        usage, "prompt_cache_hit_tokens"
     )
     prompt_cache_miss_tokens = first_token_count(usage, "prompt_cache_miss_tokens")
     if not input_tokens and (prompt_cache_hit_tokens or prompt_cache_miss_tokens):
         input_tokens = prompt_cache_hit_tokens + prompt_cache_miss_tokens
 
+    split_cache_input_tokens = cache_read_input_tokens + cache_creation_input_tokens
     total_tokens = first_token_count(usage, "total_tokens")
+    if split_cache_input_tokens and not input_tokens:
+        input_tokens = split_cache_input_tokens
+    elif split_cache_input_tokens:
+        split_cache_is_already_included = (
+            bool(total_tokens)
+            and bool(output_tokens)
+            and input_tokens + output_tokens == total_tokens
+        )
+        split_cache_reaches_total = (
+            bool(total_tokens)
+            and bool(output_tokens)
+            and input_tokens + split_cache_input_tokens + output_tokens == total_tokens
+        )
+        split_cache_fits_before_unknown_output = (
+            bool(total_tokens)
+            and not output_tokens
+            and input_tokens + split_cache_input_tokens <= total_tokens
+        )
+        if (
+            not split_cache_is_already_included
+            and (
+                split_cache_reaches_total
+                or split_cache_fits_before_unknown_output
+                or not total_tokens
+            )
+        ):
+            input_tokens += split_cache_input_tokens
+
     if total_tokens:
         if not input_tokens and output_tokens:
             input_tokens = max(total_tokens - output_tokens, 0)
@@ -101,13 +138,12 @@ def normalize_token_usage(usage: Any) -> dict[str, int]:
     cached_input_tokens = first_token_count(
         usage,
         "cached_input_tokens",
-        "cache_read_input_tokens",
         "cache_read",
         "cached_tokens",
         "prompt_cache_hit_tokens",
     )
     if not cached_input_tokens:
-        cached_input_tokens = (
+        cached_input_tokens = cache_read_input_tokens or (
             nested_token_count(usage, "input_token_details", "cache_read")
             or nested_token_count(usage, "input_token_details", "cached_tokens")
             or nested_token_count(usage, "input_tokens_details", "cache_read")
@@ -115,6 +151,11 @@ def normalize_token_usage(usage: Any) -> dict[str, int]:
             or nested_token_count(usage, "prompt_token_details", "cached_tokens")
             or nested_token_count(usage, "prompt_tokens_details", "cached_tokens")
         )
+
+    if not input_tokens and cached_input_tokens:
+        input_tokens = cached_input_tokens
+    if cached_input_tokens > input_tokens:
+        cached_input_tokens = input_tokens
 
     normalized["input_tokens"] = input_tokens
     normalized["output_tokens"] = output_tokens
@@ -218,5 +259,6 @@ __all__ = [
     "normalize_token_usage",
     "subtract_token_usage",
     "token_count",
+    "uncached_input_tokens",
     "usage_value",
 ]

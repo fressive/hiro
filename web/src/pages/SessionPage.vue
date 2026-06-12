@@ -118,10 +118,12 @@ const showSettings = ref(false)
 type SessionStats = {
   total_tokens: number
   total_input_tokens: number
+  total_uncached_input_tokens: number
   total_cached_input_tokens: number
   total_output_tokens: number
   model_usage: Record<string, {
     input: number
+    uncached_input: number
     cached: number
     output: number
     total: number
@@ -130,6 +132,7 @@ type SessionStats = {
     step: string
     tokens: number
     input_tokens: number
+    uncached_input_tokens: number
     cached_input_tokens: number
     output_tokens: number
     model: string
@@ -148,6 +151,10 @@ const chartConfig = {
     label: 'Input Tokens',
     color: 'var(--vis-color-0)',
   },
+  uncached_input_tokens: {
+    label: 'Uncached Tokens',
+    color: 'var(--vis-color-0)',
+  },
   cached_input_tokens: {
     label: 'Cached Tokens',
     color: 'var(--vis-color-1)',
@@ -156,6 +163,71 @@ const chartConfig = {
     label: 'Output Tokens',
     color: 'var(--vis-color-2)',
   },
+}
+
+const tokenInputParts = (
+  inputTokens: number | null | undefined,
+  cachedInputTokens: number | null | undefined,
+) => {
+  const input = Number(inputTokens || 0)
+  const cached = Number(cachedInputTokens || 0)
+  if (cached > input) {
+    return {
+      input: input + cached,
+      uncached: input,
+      cached,
+    }
+  }
+  return {
+    input,
+    uncached: Math.max(input - cached, 0),
+    cached,
+  }
+}
+
+const normalizeSessionStats = (value: any): SessionStats => {
+  const totalInputParts = tokenInputParts(
+    value?.total_input_tokens,
+    value?.total_cached_input_tokens,
+  )
+  const modelUsage = Object.fromEntries(
+    Object.entries(value?.model_usage || {}).map(([model, usage]: [string, any]) => {
+      const inputParts = tokenInputParts(usage?.input, usage?.cached)
+      return [
+        model,
+        {
+          input: inputParts.input,
+          uncached_input: Number(usage?.uncached_input ?? inputParts.uncached),
+          cached: inputParts.cached,
+          output: Number(usage?.output || 0),
+          total: Number(usage?.total || 0),
+        },
+      ]
+    }),
+  )
+  const rounds = Array.isArray(value?.rounds)
+    ? value.rounds.map((round: any) => {
+      const inputParts = tokenInputParts(round?.input_tokens, round?.cached_input_tokens)
+      return {
+        ...round,
+        tokens: Number(round?.tokens || 0),
+        input_tokens: inputParts.input,
+        uncached_input_tokens: Number(round?.uncached_input_tokens ?? inputParts.uncached),
+        cached_input_tokens: inputParts.cached,
+        output_tokens: Number(round?.output_tokens || 0),
+      }
+    })
+    : []
+
+  return {
+    total_tokens: Number(value?.total_tokens || 0),
+    total_input_tokens: totalInputParts.input,
+    total_uncached_input_tokens: Number(value?.total_uncached_input_tokens ?? totalInputParts.uncached),
+    total_cached_input_tokens: totalInputParts.cached,
+    total_output_tokens: Number(value?.total_output_tokens || 0),
+    model_usage: modelUsage,
+    rounds,
+  }
 }
 
 const clampAgentGraphPanelWidth = (width: number) => (
@@ -218,7 +290,7 @@ const fetchSessionStats = async () => {
   try {
     const response = await apiFetch(`/api/v1/agent/sessions/${selectedSessionId.value}/stats`)
     if (response.ok) {
-      currentSessionStats.value = await response.json()
+      currentSessionStats.value = normalizeSessionStats(await response.json())
     }
   } catch (error) {
     console.error('Failed to fetch session stats:', error)
@@ -1591,13 +1663,13 @@ watch(
                     </Card>
                     <Card>
                       <CardHeader class="pb-2">
-                        <CardDescription>Input Tokens</CardDescription>
-                        <CardTitle class="text-2xl font-bold text-blue-500">{{ currentSessionStats.total_input_tokens.toLocaleString() }}</CardTitle>
+                        <CardDescription>Uncached Input</CardDescription>
+                        <CardTitle class="text-2xl font-bold text-blue-500">{{ currentSessionStats.total_uncached_input_tokens.toLocaleString() }}</CardTitle>
                       </CardHeader>
                     </Card>
                     <Card>
                       <CardHeader class="pb-2">
-                        <CardDescription>Cached Tokens</CardDescription>
+                        <CardDescription>Cached Input</CardDescription>
                         <CardTitle class="text-2xl font-bold text-cyan-500">{{ currentSessionStats.total_cached_input_tokens.toLocaleString() }}</CardTitle>
                       </CardHeader>
                     </Card>
@@ -1629,7 +1701,7 @@ watch(
                           v-if="currentSessionStats && currentSessionStats.rounds.length > 0"
                           :data="currentSessionStats.rounds"
                           index="step"
-                          :categories="['input_tokens', 'cached_input_tokens', 'output_tokens']"
+                          :categories="['uncached_input_tokens', 'cached_input_tokens', 'output_tokens']"
                           :config="chartConfig"
                           :show-x-axis="true"
                           :show-y-axis="true"
@@ -1652,7 +1724,7 @@ watch(
                             <tr class="border-b transition-colors hover:bg-muted/50 data-[state=selected]:bg-muted">
                               <th class="h-10 px-2 text-left align-middle font-medium text-muted-foreground">Round</th>
                               <th class="h-10 px-2 text-left align-middle font-medium text-muted-foreground">Model</th>
-                              <th class="h-10 px-2 text-right align-middle font-medium text-muted-foreground">Input</th>
+                              <th class="h-10 px-2 text-right align-middle font-medium text-muted-foreground">Uncached</th>
                               <th class="h-10 px-2 text-right align-middle font-medium text-muted-foreground">Cached</th>
                               <th class="h-10 px-2 text-right align-middle font-medium text-muted-foreground">Output</th>
                               <th class="h-10 px-2 text-right align-middle font-medium text-muted-foreground">Total</th>
@@ -1662,7 +1734,7 @@ watch(
                             <tr v-for="round in currentSessionStats.rounds" :key="round.step" class="border-b transition-colors hover:bg-muted/50">
                               <td class="p-2 align-middle font-medium">{{ round.step }}</td>
                               <td class="p-2 align-middle text-xs font-mono truncate max-w-[120px]" :title="round.model">{{ round.model }}</td>
-                              <td class="p-2 align-middle text-right">{{ round.input_tokens.toLocaleString() }}</td>
+                              <td class="p-2 align-middle text-right">{{ round.uncached_input_tokens.toLocaleString() }}</td>
                               <td class="p-2 align-middle text-right text-cyan-600 dark:text-cyan-400">{{ (round.cached_input_tokens || 0).toLocaleString() }}</td>
                               <td class="p-2 align-middle text-right">{{ round.output_tokens.toLocaleString() }}</td>
                               <td class="p-2 align-middle text-right font-bold">{{ round.tokens.toLocaleString() }}</td>
